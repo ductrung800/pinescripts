@@ -1,0 +1,3532 @@
+//@version=6
+
+indicator('Oratnek Structure Pivot', overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+
+fib_to_float(string s) =>
+
+    switch s
+
+        "5.0"   => 5.0
+
+        "4.618" => 4.618
+
+        "4.236" => 4.236
+
+        "4.0"   => 4.0
+
+        "3.618" => 3.618
+
+        "3.0"   => 3.0
+
+        "2.764" => 2.764
+
+        "2.618" => 2.618
+
+        "2.272" => 2.272
+
+        "2.0"   => 2.0
+
+        "1.764" => 1.764
+
+        "1.618" => 1.618
+
+        "1.5"   => 1.5
+
+        "1.382" => 1.382
+
+        "1.272" => 1.272
+
+        "1.0"   => 1.0
+
+        "0.786" => 0.786
+
+        "0.618" => 0.618
+
+        "0.5"   => 0.5
+
+        "0.382" => 0.382
+
+        "0.236" => 0.236
+
+        "0.0"   => 0.0
+
+        => 0.618
+
+// --- Settings ---
+
+var g_theme  = 'Theme Settings'
+
+isDarkMode   = input.bool(true, 'Dark Mode (White Text)', group = g_theme)
+
+themeTextCol = isDarkMode ? color.white : color.black
+
+themeHeadBg  = isDarkMode ? color.new(color.black, 0) : color.new(color.silver, 20)
+
+grp_calc = 'Calculation'
+
+min_len_input = input.int(2, 'Min Length', minval = 1, group = grp_calc)
+
+max_len_input = input.int(5, 'Max Length', minval = 2, group = grp_calc)
+
+priority_mode = input.string("Tightest Structure", "Priority Mode", options=["Tightest Structure", "Longest Length", "Shortest Length"], group=grp_calc)
+
+grp_fib = 'Fibonacci & Stop Settings'
+
+fib_first_str  = input.string("0.5", "1st Pivot Level", options=["1.0","0.786","0.618","0.5","0.382","0.236","0.0"], group=grp_fib, tooltip="Fibonacci ratio between HL and 2nd Pivot. This level becomes the 1st Pivot (entry).")
+
+fib_tp_str     = input.string("2.0", "TP1 Fib Extension", options=["1.5","1.618","1.764","2.0","2.272","2.618"], group=grp_fib, tooltip="Fibonacci extension from HL. TP1 = HL + (2nd Pivot - HL) x this value.")
+
+fib_tp2_str    = input.string("4.0", "TP2 Fib Extension", options=["2.764","3.0","3.618","4.0","4.236","4.618","5.0"], group=grp_fib, tooltip="Fibonacci extension from HL. TP2 = HL + (2nd Pivot - HL) x this value.")
+
+ma_type_str    = input.string("EMA", 'MA Type for Stop', options=["EMA","SMA"], group=grp_fib, tooltip="Moving average type used to trail the Stop and Fail check.")
+
+ma_len         = input.int(21, 'MA Length for Stop', minval=2, group=grp_fib, tooltip="Phase 1 / Phase 3 stop trails MA of selected source.")
+
+ma_src_str     = input.string("Low", 'MA Source for Stop', options=["Low","Close","High"], group=grp_fib, tooltip="Source used for the MA that trails the Stop and Fail check. Low = most conservative, High = tightest.")
+
+fib_first_val = fib_to_float(fib_first_str)
+
+fib_tp_val    = fib_to_float(fib_tp_str)
+
+fib_tp2_val   = fib_to_float(fib_tp2_str)
+
+// Visibility Settings
+
+grp_vis = 'Visibility Settings'
+
+visual_mode = input.string("DECISION", "Visual Mode", options=["FULL","DECISION","CLEAN"], group=grp_vis, tooltip="FULL = all history/context. DECISION = active structure + current CP context. CLEAN = only essential active levels + dashboard.")
+
+show_Labels     = input.bool(true, 'Show LL/HL Labels', group = grp_vis)
+
+show_Trend      = input.bool(true, 'Show Structure Line', group = grp_vis)
+
+show_PLine      = input.bool(true, 'Show 2nd Pivot Line', group = grp_vis)
+
+show_FirstPivot = input.bool(true, 'Show 1st Pivot Line', group = grp_vis)
+
+show_StopLoss   = input.bool(true, 'Show Stop Loss (MA or 1st Pivot)', group = grp_vis)
+
+show_TP1        = input.bool(true, 'Show TP1', group = grp_vis)
+
+show_TP2        = input.bool(true, 'Show TP2', group = grp_vis)
+
+show_Counter    = input.bool(true, 'Show Counter Trend', group = grp_vis)
+
+lock_Counter    = input.bool(true, 'Lock Counter Line on Break', group = grp_vis)
+
+show_Table      = input.bool(true, 'Show Info Table', group = grp_vis)
+
+table_pos       = input.string("Bottom Right", "Table Position", options=["Top Right","Top Left","Bottom Right","Bottom Left","Middle Right","Middle Left"], group=grp_vis)
+
+table_txt_size  = input.string(size.small, "Table Text Size", options=[size.tiny, size.small, size.normal, size.large], group=grp_vis)
+
+// History Settings
+
+grp_hist = 'History Settings'
+
+show_History       = input.bool(true, 'Show Pivot History', group = grp_hist)
+
+show_Price_History = input.bool(false, 'Show Price History (on History Lines)', group = grp_hist)
+
+show_Label_History = input.bool(false, 'Show Label History', group = grp_hist)
+
+limit_History      = input.bool(true, 'Limit History by Bars', group = grp_hist)
+
+hist_bars          = input.int(100, 'Max History Bars', minval=10, maxval=5000, group=grp_hist)
+
+vis_full = visual_mode == "FULL"
+vis_decision = visual_mode == "DECISION"
+vis_clean = visual_mode == "CLEAN"
+show_Labels_eff = show_Labels and vis_full
+show_History_eff = show_History and vis_full
+show_Label_History_eff = show_Label_History and vis_full
+show_Counter_eff = show_Counter and not vis_clean
+
+grp_style = 'Style Settings'
+
+lblSize          = input.string(size.large, 'Text Size', options = [size.tiny, size.small, size.normal, size.large], group = grp_style)
+
+col_Long         = input.color(#ffff00, 'Structure Color', group = grp_style)
+
+col_FirstPivot   = input.color(color.rgb(255, 255, 255), '1st Pivot Color', group = grp_style)
+
+col_StopLoss     = input.color(color.rgb(255, 80, 80), 'Stop Loss Color', group = grp_style)
+
+col_Target       = input.color(#b8b8b8, 'Target Color', group = grp_style)
+
+col_Counter      = input.color(#b8b8b8, 'Counter Trend Color', group = grp_style)
+
+width_Line       = input.int(1, 'Line Width', minval = 1, group = grp_style)
+
+style_Trend      = input.string(line.style_dashed, 'Structure Line Style', options = [line.style_solid, line.style_dashed, line.style_dotted], group = grp_style)
+
+style_Pivot      = input.string(line.style_solid, '2nd Pivot Line Style', options = [line.style_solid, line.style_dashed, line.style_dotted], group = grp_style)
+
+style_FirstPivot = input.string(line.style_dashed, '1st Pivot Line Style', options = [line.style_solid, line.style_dashed, line.style_dotted], group = grp_style)
+
+style_StopLoss   = input.string(line.style_dotted, 'Stop Loss Line Style', options = [line.style_solid, line.style_dashed, line.style_dotted], group = grp_style)
+
+style_Target     = input.string(line.style_dashed, 'Target Line Style', options = [line.style_solid, line.style_dashed, line.style_dotted], group = grp_style)
+
+style_Counter    = input.string(line.style_dashed, 'Counter Line Style', options = [line.style_solid, line.style_dashed, line.style_dotted], group = grp_style)
+
+// History Styles
+
+col_Pivot_Hist   = input.color(color.gray, 'History Color', group = grp_style)
+
+width_Pivot_Hist = input.int(1, 'History Pivot Width', minval = 1, group = grp_style)
+
+style_Pivot_Hist = input.string(line.style_dotted, 'History Pivot Style', options = [line.style_solid, line.style_dashed, line.style_dotted], group = grp_style)
+
+// --- MA Calculation for Stop ---
+
+float ma_src = ma_src_str == "Low" ? low : ma_src_str == "High" ? high : close
+
+ma_stop = ma_type_str == "SMA" ? ta.sma(ma_src, ma_len) : ta.ema(ma_src, ma_len)
+
+// --- Structs ---
+
+type PivotState
+
+    int len
+
+    float prev_p
+
+    int prev_idx
+
+    float curr_p
+
+    int curr_idx
+
+    bool is_setup
+
+    float break_val
+
+    int break_idx
+
+    bool is_long
+
+type DrawObjects
+
+    line  l_trend         = na
+
+    line  l_pivot         = na
+
+    line  l_first_pivot   = na
+
+    line  l_stop          = na
+
+    line  l_ma_stop       = na
+
+    label lbl_ma_stop     = na
+
+    line  l_counter       = na
+
+    label lbl_price       = na
+
+    label lbl_first_price = na
+
+    label lbl_stop_price  = na
+
+    label lbl_curr        = na
+
+    label lbl_prev        = na
+
+    int   sig             = 0
+
+    // Fibonacci State
+
+    float fib_1st_price = na
+
+    float tp1_price     = na
+
+    float tp2_price     = na
+
+    int   phase         = 1
+
+    // TP % caches (for table)
+
+    float tp1_pct_1st = na
+
+    float tp1_pct_2nd = na
+
+    float tp1_pct_avg = na
+
+    float tp2_pct_1st = na
+
+    float tp2_pct_2nd = na
+
+    float tp2_pct_avg = na
+
+    // Target lines
+
+    line  l_target1   = na
+
+    label lbl_target1 = na
+
+    line  l_target2   = na
+
+    label lbl_target2 = na
+
+    // Locking State
+
+    bool  cnt_locked = false
+
+    int   cnt_x1     = na
+
+    float cnt_y1     = na
+
+    int   cnt_x2     = na
+
+    float cnt_y2     = na
+
+type HistoryLine
+
+    line  l
+
+    label p
+
+// --- Variables ---
+
+var PivotState[]  states_long    = array.new<PivotState>()
+
+var PivotState[]  states_short   = array.new<PivotState>()
+
+var HistoryLine[] history_lines  = array.new<HistoryLine>()
+
+var label[]       history_labels = array.new<label>()
+
+if bar_index == 0
+
+    for i = min_len_input to max_len_input
+
+        array.push(states_long, PivotState.new(i, na, na, na, na, false, na, na, true))
+
+        array.push(states_short, PivotState.new(i, na, na, na, na, false, na, na, false))
+
+var DrawObjects d_long = DrawObjects.new()
+
+var bool fail_this_bar           = false
+
+var bool setup_created_this_bar  = false
+
+// --- Info Table ---
+
+var table info_table = na
+
+get_table_position(string pos) =>
+
+    switch pos
+
+        "Top Right"    => position.top_right
+
+        "Top Left"     => position.top_left
+
+        "Bottom Left"  => position.bottom_left
+
+        "Middle Right" => position.middle_right
+
+        "Middle Left"  => position.middle_left
+
+        => position.bottom_right
+
+tbl_header(table t, int col, int row, string txt) =>
+
+    table.cell(t, col, row, txt, text_color = color.white, text_size = table_txt_size, bgcolor = color.new(color.gray, 20), text_halign = text.align_center)
+
+tbl_cell(table t, int col, int row, string txt, color txt_col, color bg) =>
+
+    table.cell(t, col, row, txt, text_color = txt_col, text_size = table_txt_size, bgcolor = bg, text_halign = text.align_left)
+
+tbl_price(table t, int col, int row, string txt, color txt_col, color bg) =>
+
+    table.cell(t, col, row, txt, text_color = txt_col, text_size = table_txt_size, bgcolor = bg, text_halign = text.align_right)
+
+fmt_pct(float v) =>
+
+    na(v) ? "—" : "+" + str.tostring(v, "#.##") + "%"
+
+// --- Method ---
+
+method update(PivotState st) =>
+
+    p = st.is_long ? ta.pivotlow(low, st.len, st.len) : ta.pivothigh(high, st.len, st.len)
+
+    if not na(p)
+
+        setup_cond = false
+
+        if not na(st.curr_p)
+
+            if st.is_long
+
+                if p > st.curr_p
+
+                    setup_cond := true
+
+            else
+
+                if p < st.curr_p
+
+                    setup_cond := true
+
+        st.prev_p    := st.curr_p
+
+        st.prev_idx  := st.curr_idx
+
+        st.curr_p    := p
+
+        st.curr_idx  := bar_index - st.len
+
+        st.is_setup  := setup_cond
+
+        st.break_val := na
+
+        st.break_idx := na
+
+        if setup_cond and not na(st.prev_idx)
+
+            best_val = st.is_long ? 0.0 : 1000000.0
+
+            best_idx = -1
+
+            start_s = st.prev_idx + 1
+
+            end_s = st.curr_idx - 1
+
+            if end_s >= start_s
+
+                for i = start_s to end_s
+
+                    v = st.is_long ? high[bar_index - i] : low[bar_index - i]
+
+                    if st.is_long
+
+                        if v > best_val
+
+                            best_val := v
+
+                            best_idx := i
+
+                    else
+
+                        if v < best_val
+
+                            best_val := v
+
+                            best_idx := i
+
+            if best_idx != -1
+
+                st.break_val := best_val
+
+                st.break_idx := best_idx
+
+// --- Helper: Label Logic ---
+
+is_bottom_label(string txt) =>
+
+    str.contains(txt, "LL") or str.contains(txt, "HL")
+
+method push_stack(label[] arr, label lbl) =>
+
+    merged = false
+
+    if array.size(arr) > 0
+
+        check_limit = math.min(20, array.size(arr))
+
+        for i = 1 to check_limit
+
+            idx = array.size(arr) - i
+
+            h_lbl = array.get(arr, idx)
+
+            if label.get_x(h_lbl) == label.get_x(lbl)
+
+                t_hist = label.get_text(h_lbl)
+
+                t_new = label.get_text(lbl)
+
+                hist_is_bottom = is_bottom_label(t_hist)
+
+                new_is_bottom = is_bottom_label(t_new)
+
+                if hist_is_bottom == new_is_bottom
+
+                    if not str.contains(t_hist, t_new)
+
+                        label.set_text(h_lbl, t_hist + "-" + t_new)
+
+                    label.delete(lbl)
+
+                    merged := true
+
+                    break
+
+    if not merged
+
+        array.push(arr, lbl)
+
+// --- Helper: Cleanup Fib/Stop/Target ---
+
+method cleanup_fib(DrawObjects d) =>
+
+    line.delete(d.l_first_pivot)
+
+    label.delete(d.lbl_first_price)
+
+    line.delete(d.l_stop)
+
+    label.delete(d.lbl_stop_price)
+
+    line.delete(d.l_target1)
+
+    label.delete(d.lbl_target1)
+
+    line.delete(d.l_target2)
+
+    label.delete(d.lbl_target2)
+
+    line.delete(d.l_ma_stop)
+
+    label.delete(d.lbl_ma_stop)
+
+    d.l_ma_stop        := na
+
+    d.lbl_ma_stop      := na
+
+    d.l_first_pivot    := na
+
+    d.lbl_first_price  := na
+
+    d.l_stop           := na
+
+    d.lbl_stop_price   := na
+
+    d.l_target1        := na
+
+    d.lbl_target1      := na
+
+    d.l_target2        := na
+
+    d.lbl_target2      := na
+
+    d.fib_1st_price    := na
+
+    d.tp1_price        := na
+
+    d.tp2_price        := na
+
+    d.tp1_pct_1st      := na
+
+    d.tp1_pct_2nd      := na
+
+    d.tp1_pct_avg      := na
+
+    d.tp2_pct_1st      := na
+
+    d.tp2_pct_2nd      := na
+
+    d.tp2_pct_avg      := na
+
+    d.phase            := 1
+
+// --- Main Logic: Long ---
+
+for st in states_long
+
+    st.update()
+
+    if st.is_setup and not na(st.curr_p) and low < st.curr_p
+
+        st.is_setup := false
+
+// --- Main Logic: Short (internal, Counter Trend) ---
+
+for st in states_short
+
+    st.update()
+
+    if st.is_setup and not na(st.curr_p) and high > st.curr_p
+
+        st.is_setup := false
+
+find_winner(PivotState[] arr, string p_mode) =>
+
+    PivotState w = na
+
+    for st in arr
+
+        if st.is_setup and not na(st.break_val)
+
+            upd = false
+
+            if na(w)
+
+                upd := true
+
+            else
+
+                if p_mode == "Tightest Structure"
+
+                    if st.is_long
+
+                        if st.break_val < w.break_val
+
+                            upd := true
+
+                    else
+
+                        if st.break_val > w.break_val
+
+                            upd := true
+
+                else if p_mode == "Longest Length"
+
+                    upd := true
+
+                else
+
+                    upd := false
+
+            if upd
+
+                w := st
+
+    w
+
+PivotState win_long = na
+
+win_long := find_winner(states_long, priority_mode)
+
+if na(win_long) and array.size(states_long) > 0
+
+    win_long := array.get(states_long, 0)
+
+if not win_long.is_setup and not na(win_long.curr_p) and low < win_long.curr_p
+
+    win_long.curr_p   := low
+
+    win_long.curr_idx := bar_index
+
+// ============================================================================
+
+// MA CLOUD + MA STRUCTURE BAR COLORS
+
+// ============================================================================
+
+grp_cloud_ma = 'MA Cloud: Settings'
+
+inputLength       = input.int(21, title='MA Length (Daily)', minval=1, group=grp_cloud_ma)
+
+inputTypeDaily    = input.string('EMA', title='MA Type (Daily)', options=['SMA', 'EMA'], group=grp_cloud_ma)
+
+inputWeeklyLength = input.int(10, title='MA Length (Weekly)', minval=1, group=grp_cloud_ma)
+
+inputTypeWeekly   = input.string('SMA', title='MA Type (Weekly)', options=['SMA', 'EMA'], group=grp_cloud_ma)
+
+grp_cloud_vis = 'MA Cloud: Visual'
+
+cloudUpColor      = input.color(color.new(color.green, 90), title='Cloud Color (Price Above)', group=grp_cloud_vis)
+
+cloudNeutralColor = input.color(color.new(color.gray, 90), title='Cloud Color (Price Inside)', group=grp_cloud_vis)
+
+cloudDownColor    = input.color(color.new(color.red, 90), title='Cloud Color (Price Below)', group=grp_cloud_vis)
+
+// Adjustable MA Structure bar-color controls.
+
+// Reuses the existing MAHigh / ema21 / MALow cloud averages.
+
+grp_bar_color = 'MA Structure: Bar Color'
+
+changebarcol = input.bool(true, title='Change Bar Color', group=grp_bar_color)
+useAtrTrendBarColor = input.bool(true, title='Use NOW.ATR SMA50 Trend Color Base', group=grp_bar_color, tooltip='ON: base candle color follows NOW.ATR price-vs-SMA50 trend regime. ASP/CP signal bars still override. OFF: use the original MA Structure bar colors.')
+
+useHighBelowCondition = input.bool(true, title='Use High Below Structure for Bearish', tooltip='ON: bearish when HIGH is below the lowest MA. OFF: bearish only when Close is below MA High, MA Close and MA Low.', group=grp_bar_color)
+
+BullishColor = input.color(#ffffff, title='Bullish Candle Color', group=grp_bar_color)
+
+BearishColor = input.color(color.rgb(255, 0, 255), title='Bearish Candle Color', group=grp_bar_color)
+
+NeutralColor = input.color(color.gray, title='Initial Neutral Candle Color', group=grp_bar_color)
+
+highlightSignalBars = input.bool(true, title='Highlight Signal Bars', group=grp_bar_color, tooltip='Overrides the normal MA-structure candle color on fresh setup / entry signals.')
+signalYellowColor = input.color(color.yellow, title='Signal Bar · Yellow', group=grp_bar_color, tooltip='Used for watch / early signals such as SQZ, 4%, P1, and base CP break-watch.')
+signalLimeColor = input.color(color.lime, title='Signal Bar · Lime', group=grp_bar_color, tooltip='Used for actionable / confirmation signals such as P2, CP actionable, CP high-quality, and CP sweet spot.')
+showSignalIdentityCodes = input.bool(true, title='Show Signal Identity Codes', group=grp_bar_color, tooltip='Shows a small code label on each signal bar so you can tell SQZ, 4%, P1, P2, and CP-family signals apart.')
+showSignalCodeOnClean = input.bool(false, title='Show Signal Codes In CLEAN Mode', group=grp_bar_color, tooltip='OFF = hide the small signal-identity labels in CLEAN mode. ON = still show them in CLEAN mode.')
+
+var color lastStructureBarColor = na
+
+getMa(src, length, maType) =>
+
+    switch maType
+
+        'SMA' => ta.sma(src, length)
+
+        'EMA' => ta.ema(src, length)
+
+        => ta.ema(src, length)
+
+isWeeklyChart = timeframe.isweekly
+
+currentLength = isWeeklyChart ? inputWeeklyLength : inputLength
+
+currentType   = isWeeklyChart ? inputTypeWeekly : inputTypeDaily
+
+MAHigh = getMa(high, currentLength, currentType)
+
+MALow  = getMa(low, currentLength, currentType)
+
+ema21  = getMa(close, currentLength, currentType)
+
+ema21Color = ema21 > ema21[1] ? color.green : ema21 < ema21[1] ? color.red : color.gray
+
+ema21LowColor = MALow > MALow[1] ? color.green : MALow < MALow[1] ? color.red : color.gray
+
+structureBullish = close > MAHigh and close > ema21 and close > MALow
+
+structureBearish = useHighBelowCondition ? high < MALow : close < MALow and close < ema21 and close < MAHigh
+
+color structureBarColor = na
+
+if structureBullish
+
+    structureBarColor := BullishColor
+
+else if structureBearish
+
+    structureBarColor := BearishColor
+
+else
+
+    structureBarColor := nz(lastStructureBarColor[1], NeutralColor)
+
+lastStructureBarColor := structureBarColor
+
+// --- Helper: Counter Line Coordinates ---
+
+get_counter_coordinates(PivotState[] arr, int limit_idx, bool find_highs) =>
+
+    anchor_val = find_highs ? -1000000.0 : 1000000.0
+
+    float anchor_x = na
+
+    float anchor_y = na
+
+    for st in arr
+
+        if not na(st.prev_idx) and not na(st.prev_p)
+
+            if st.prev_idx <= limit_idx
+
+                is_extreme = false
+
+                if find_highs
+
+                    if st.prev_p > anchor_val
+
+                        is_extreme := true
+
+                else
+
+                    if st.prev_p < anchor_val
+
+                        is_extreme := true
+
+                if is_extreme
+
+                    anchor_val := st.prev_p
+
+                    anchor_x   := float(st.prev_idx)
+
+                    anchor_y   := st.prev_p
+
+        if not na(st.curr_idx) and not na(st.curr_p)
+
+            if st.curr_idx <= limit_idx
+
+                is_extreme = false
+
+                if find_highs
+
+                    if st.curr_p > anchor_val
+
+                        is_extreme := true
+
+                else
+
+                    if st.curr_p < anchor_val
+
+                        is_extreme := true
+
+                if is_extreme
+
+                    anchor_val := st.curr_p
+
+                    anchor_x   := float(st.curr_idx)
+
+                    anchor_y   := st.curr_p
+
+    float best_slope = na
+
+    float res_x2 = na
+
+    float res_y2 = na
+
+    if not na(anchor_x)
+
+        x1 = anchor_x
+
+        y1 = anchor_y
+
+        for st in arr
+
+            if not na(st.curr_idx) and not na(st.curr_p)
+
+                if st.curr_idx > x1 and st.curr_idx < limit_idx
+
+                    m = (st.curr_p - y1) / (st.curr_idx - x1)
+
+                    update_best = false
+
+                    if na(best_slope)
+
+                        update_best := true
+
+                    else
+
+                        if find_highs
+
+                            if m > best_slope
+
+                                update_best := true
+
+                        else
+
+                            if m < best_slope
+
+                                update_best := true
+
+                    if update_best
+
+                        best_slope := m
+
+                        res_x2 := float(st.curr_idx)
+
+                        res_y2 := st.curr_p
+
+        if not na(res_x2)
+
+            [x1, y1, res_x2, res_y2]
+
+        else
+
+            [float(na), float(na), float(na), float(na)]
+
+    else
+
+        [float(na), float(na), float(na), float(na)]
+
+// --- Drawing Function ---
+
+draw_long(PivotState w, PivotState[] opp_arr, DrawObjects d) =>
+
+    float current_cnt_val = na
+
+    just_created = false
+
+    local_fail = false
+
+    local_created = false
+
+    c_base = col_Long
+
+    sig = w.curr_idx * 1000 + w.len * 10 + (w.is_setup ? 1 : 0)
+
+    if sig != d.sig
+
+        line.delete(d.l_trend)
+
+        line.delete(d.l_counter)
+
+        d.cleanup_fib()
+
+        if not na(d.l_pivot)
+
+            if show_History_eff
+
+                line.set_color(d.l_pivot, col_Pivot_Hist)
+
+                line.set_width(d.l_pivot, width_Pivot_Hist)
+
+                line.set_style(d.l_pivot, style_Pivot_Hist)
+
+                label saved_price_lbl = na
+
+                if show_Price_History and not na(d.lbl_price)
+
+                    if array.size(history_lines) > 0
+
+                        new_p = label.get_y(d.lbl_price)
+
+                        for i = 0 to array.size(history_lines) - 1
+
+                            hl_old = array.get(history_lines, i)
+
+                            if not na(hl_old.p)
+
+                                old_p = label.get_y(hl_old.p)
+
+                                if new_p == old_p
+
+                                    label.delete(hl_old.p)
+
+                                    hl_old.p := na
+
+                    label.set_textcolor(d.lbl_price, col_Pivot_Hist)
+
+                    label.set_text(d.lbl_price, "Past Pivot = " + str.tostring(label.get_y(d.lbl_price), "#,###.##"))
+
+                    saved_price_lbl := d.lbl_price
+
+                else
+
+                    label.delete(d.lbl_price)
+
+                array.push(history_lines, HistoryLine.new(d.l_pivot, saved_price_lbl))
+
+            else
+
+                line.delete(d.l_pivot)
+
+                label.delete(d.lbl_price)
+
+            if show_Label_History_eff
+
+                if not na(d.lbl_curr)
+
+                    label.set_textcolor(d.lbl_curr, col_Pivot_Hist)
+
+                    history_labels.push_stack(d.lbl_curr)
+
+                if not na(d.lbl_prev)
+
+                    label.set_textcolor(d.lbl_prev, col_Pivot_Hist)
+
+                    history_labels.push_stack(d.lbl_prev)
+
+            else
+
+                label.delete(d.lbl_curr)
+
+                label.delete(d.lbl_prev)
+
+        else
+
+            line.delete(d.l_pivot)
+
+            label.delete(d.lbl_price)
+
+            label.delete(d.lbl_curr)
+
+            label.delete(d.lbl_prev)
+
+        d.l_trend    := na
+
+        d.l_pivot    := na
+
+        d.l_counter  := na
+
+        d.lbl_price  := na
+
+        d.lbl_curr   := na
+
+        d.lbl_prev   := na
+
+        d.cnt_locked := false
+
+        d.cnt_x1     := na
+
+        d.cnt_y1     := na
+
+        d.cnt_x2     := na
+
+        d.cnt_y2     := na
+
+        if not na(w.curr_p)
+
+            txt_c = w.is_setup ? "HL" : "LL"
+
+            if show_Labels_eff
+
+                d.lbl_curr := label.new(w.curr_idx, w.curr_p, text=txt_c, style=label.style_label_up, color=color.new(color.white, 100), textcolor=c_base, size=lblSize)
+
+            if w.is_setup and not na(w.prev_idx)
+
+                if show_Labels_eff
+
+                    d.lbl_prev := label.new(w.prev_idx, w.prev_p, text="LL", style=label.style_label_up, color=color.new(color.white, 100), textcolor=c_base, size=lblSize)
+
+                if show_Trend
+
+                    d.l_trend := line.new(w.prev_idx, w.prev_p, w.curr_idx, w.curr_p, color=c_base, style=style_Trend, width=width_Line)
+
+                if not na(w.break_idx)
+
+                    fib_range = w.break_val - w.curr_p
+
+                    fv_1st = w.curr_p + fib_range * fib_first_val
+
+                    tp1 = w.curr_p + fib_range * fib_tp_val
+
+                    tp2 = w.curr_p + fib_range * fib_tp2_val
+
+                    avg_12 = (fv_1st + w.break_val) / 2.0
+
+                    t1_p1st = (tp1 - fv_1st) / fv_1st * 100.0
+
+                    t1_p2nd = (tp1 - w.break_val) / w.break_val * 100.0
+
+                    t1_pavg = (tp1 - avg_12) / avg_12 * 100.0
+
+                    t2_p1st = (tp2 - fv_1st) / fv_1st * 100.0
+
+                    t2_p2nd = (tp2 - w.break_val) / w.break_val * 100.0
+
+                    t2_pavg = (tp2 - avg_12) / avg_12 * 100.0
+
+                    d.fib_1st_price := fv_1st
+
+                    d.tp1_pct_1st := t1_p1st
+
+                    d.tp1_pct_2nd := t1_p2nd
+
+                    d.tp1_pct_avg := t1_pavg
+
+                    d.tp2_pct_1st := t2_p1st
+
+                    d.tp2_pct_2nd := t2_p2nd
+
+                    d.tp2_pct_avg := t2_pavg
+
+                    d.tp1_price := tp1
+
+                    d.tp2_price := tp2
+
+                    d.phase := 1
+
+                    if show_PLine
+
+                        d.l_pivot := line.new(w.break_idx, w.break_val, bar_index + 5, w.break_val, color=c_base, width=width_Line, style=style_Pivot)
+
+                        d.lbl_price := label.new(bar_index + 5, w.break_val, text="2nd = " + str.tostring(w.break_val, "#,###.##"), style=label.style_label_left, color=color.new(color.white, 100), textcolor=c_base, size=lblSize)
+
+                    if show_FirstPivot
+
+                        first_anchor = w.curr_idx + w.len
+
+                        d.l_first_pivot := line.new(first_anchor, fv_1st, bar_index + 5, fv_1st, color=col_FirstPivot, width=width_Line, style=style_FirstPivot)
+
+                        d.lbl_first_price := label.new(bar_index + 5, fv_1st, text="1st = " + str.tostring(fv_1st, "#,###.##"), style=label.style_label_left, color=color.new(color.white, 100), textcolor=col_FirstPivot, size=lblSize)
+
+                    if show_StopLoss
+
+                        d.l_stop := line.new(bar_index, ma_stop, bar_index + 5, ma_stop, color=col_StopLoss, width=width_Line, style=style_StopLoss)
+
+                    if show_TP1
+
+                        tp1_txt = "TP1 = " + str.tostring(tp1, "#,###.##")
+
+                        d.l_target1 := line.new(w.break_idx, tp1, bar_index + 5, tp1, color=col_Target, width=width_Line, style=style_Target)
+
+                        d.lbl_target1 := label.new(bar_index + 5, tp1, text=tp1_txt, style=label.style_label_left, color=color.new(color.white, 100), textcolor=col_Target, size=lblSize)
+
+                    if show_TP2
+
+                        tp2_txt = "TP2 = " + str.tostring(tp2, "#,###.##")
+
+                        d.l_target2 := line.new(w.break_idx, tp2, bar_index + 5, tp2, color=col_Target, width=width_Line, style=style_Target)
+
+                        d.lbl_target2 := label.new(bar_index + 5, tp2, text=tp2_txt, style=label.style_label_left, color=color.new(color.white, 100), textcolor=col_Target, size=lblSize)
+
+        if w.is_setup
+
+            just_created := true
+
+            local_created := true
+
+        d.sig := sig
+
+    if show_StopLoss
+
+        if na(d.l_ma_stop)
+
+            d.l_ma_stop := line.new(bar_index, ma_stop, bar_index + 5, ma_stop, color=color.new(col_StopLoss, 50), width=width_Line, style=style_StopLoss)
+
+            d.lbl_ma_stop := label.new(bar_index + 5, ma_stop, text=ma_type_str + str.tostring(ma_len) + " " + ma_src_str + " = " + str.tostring(ma_stop, "#,###.##"), style=label.style_label_left, color=color.new(color.white, 100), textcolor=ema21LowColor, size=lblSize)
+
+        else
+
+            line.set_x1(d.l_ma_stop, bar_index)
+
+            line.set_x2(d.l_ma_stop, bar_index + 5)
+
+            line.set_y1(d.l_ma_stop, ma_stop)
+
+            line.set_y2(d.l_ma_stop, ma_stop)
+
+            label.set_x(d.lbl_ma_stop, bar_index + 5)
+
+            label.set_y(d.lbl_ma_stop, ma_stop)
+
+            label.set_text(d.lbl_ma_stop, ma_type_str + str.tostring(ma_len) + " " + ma_src_str + " = " + str.tostring(ma_stop, "#,###.##"))
+
+            label.set_textcolor(d.lbl_ma_stop, ema21LowColor)
+
+    // --- Counter Trend Logic ---
+
+    draw_cnt = false
+
+    if show_Counter_eff and not w.is_setup
+
+        float c_x1 = na
+
+        float c_y1 = na
+
+        float c_x2 = na
+
+        float c_y2 = na
+
+        if lock_Counter and d.cnt_locked
+
+            c_x1 := float(d.cnt_x1)
+
+            c_y1 := d.cnt_y1
+
+            c_x2 := float(d.cnt_x2)
+
+            c_y2 := d.cnt_y2
+
+        else
+
+            [tx1, ty1, tx2, ty2] = get_counter_coordinates(opp_arr, w.curr_idx, true)
+
+            c_x1 := tx1
+
+            c_y1 := ty1
+
+            c_x2 := tx2
+
+            c_y2 := ty2
+
+        if not na(c_x1) and not na(c_x2)
+
+            draw_cnt := true
+
+            m = (c_y2 - c_y1) / (c_x2 - c_x1)
+
+            current_cnt_val := c_y2 + m * (bar_index - c_x2)
+
+            target_x = bar_index + 5
+
+            target_y = c_y2 + m * (target_x - c_x2)
+
+            line.delete(d.l_counter)
+
+            d.l_counter := line.new(int(c_x1), c_y1, target_x, target_y, color=col_Counter, width=width_Line, style=style_Counter, extend=extend.none)
+
+            if lock_Counter and not d.cnt_locked
+
+                if close > current_cnt_val
+
+                    d.cnt_locked := true
+
+                    d.cnt_x1 := int(c_x1)
+
+                    d.cnt_y1 := c_y1
+
+                    d.cnt_x2 := int(c_x2)
+
+                    d.cnt_y2 := c_y2
+
+    if not draw_cnt
+
+        line.delete(d.l_counter)
+
+        d.l_counter := na
+
+    if w.is_setup
+
+        if not na(d.l_pivot)
+
+            line.set_x2(d.l_pivot, bar_index + 5)
+
+        if not na(d.lbl_price)
+
+            label.set_x(d.lbl_price, bar_index + 5)
+
+        if not na(d.l_first_pivot)
+
+            line.set_x2(d.l_first_pivot, bar_index + 5)
+
+        if not na(d.lbl_first_price)
+
+            label.set_x(d.lbl_first_price, bar_index + 5)
+
+        if not na(d.l_target1)
+
+            line.set_x2(d.l_target1, bar_index + 5)
+
+        if not na(d.lbl_target1)
+
+            label.set_x(d.lbl_target1, bar_index + 5)
+
+        if not na(d.l_target2)
+
+            line.set_x2(d.l_target2, bar_index + 5)
+
+        if not na(d.lbl_target2)
+
+            label.set_x(d.lbl_target2, bar_index + 5)
+
+        if d.phase == 1 and not na(w.break_val) and close >= w.break_val
+
+            d.phase := 2
+
+        if d.phase == 2 and not na(d.tp1_price) and close >= d.tp1_price
+
+            d.phase := 3
+
+        stop_current = d.phase == 1 ? ma_stop : d.phase == 2 ? d.fib_1st_price : math.max(d.fib_1st_price, ma_stop)
+
+        if not na(d.l_stop)
+
+            line.set_x1(d.l_stop, bar_index)
+
+            line.set_x2(d.l_stop, bar_index + 5)
+
+            line.set_y1(d.l_stop, stop_current)
+
+            line.set_y2(d.l_stop, stop_current)
+
+        if not na(d.lbl_stop_price)
+
+            stop_eq_1st = stop_current == d.fib_1st_price
+
+            stop_text = stop_eq_1st ? "Stop / 1st = " + str.tostring(stop_current, "#,###.##") : "Stop [" + ma_type_str + str.tostring(ma_len) + " " + ma_src_str + "] = " + str.tostring(stop_current, "#,###.##")
+
+            label.set_x(d.lbl_stop_price, bar_index + 5)
+
+            label.set_y(d.lbl_stop_price, stop_current)
+
+            label.set_text(d.lbl_stop_price, stop_text)
+
+        if not na(d.lbl_first_price)
+
+            hide_first_lbl = stop_current == d.fib_1st_price and not na(d.lbl_stop_price)
+
+            label.set_text(d.lbl_first_price, hide_first_lbl ? "" : "1st = " + str.tostring(d.fib_1st_price, "#,###.##"))
+
+        if not na(d.l_first_pivot)
+
+            hide_first_line = stop_current == d.fib_1st_price and not na(d.l_stop)
+
+            line.set_color(d.l_first_pivot, hide_first_line ? color.new(col_FirstPivot, 100) : col_FirstPivot)
+
+        if not just_created
+
+            fail = low < ma_stop
+
+            if fail
+
+                w.is_setup := false
+
+                local_fail := true
+
+                line.delete(d.l_trend)
+
+                line.delete(d.l_pivot)
+
+                label.delete(d.lbl_price)
+
+                label.delete(d.lbl_curr)
+
+                label.delete(d.lbl_prev)
+
+                d.cleanup_fib()
+
+                d.l_trend := na
+
+                d.l_pivot := na
+
+                d.sig := -1
+
+    [current_cnt_val, local_fail, local_created]
+
+// --- History Cleanup & Extension ---
+
+if show_History_eff and array.size(history_lines) > 0
+
+    for i = array.size(history_lines) - 1 to 0
+
+        HistoryLine hl = array.get(history_lines, i)
+
+        line.set_x2(hl.l, bar_index + 5)
+
+        if not na(hl.p)
+
+            label.set_x(hl.p, bar_index + 5)
+
+        if limit_History
+
+            int l_idx = line.get_x1(hl.l)
+
+            int dist = bar_index - l_idx
+
+            if dist > hist_bars
+
+                line.delete(hl.l)
+
+                label.delete(hl.p)
+
+                array.remove(history_lines, i)
+
+if show_Label_History_eff and array.size(history_labels) > 0
+
+    for i = array.size(history_labels) - 1 to 0
+
+        label lb = array.get(history_labels, i)
+
+        if limit_History
+
+            int l_idx = label.get_x(lb)
+
+            int dist = bar_index - l_idx
+
+            if dist > hist_bars
+
+                label.delete(lb)
+
+                array.remove(history_labels, i)
+
+// --- Execute Drawing ---
+
+fail_this_bar := false
+
+setup_created_this_bar := false
+
+float cnt_val_long = na
+
+if not na(win_long)
+
+    [tmp_cnt, tmp_fail, tmp_created] = draw_long(win_long, states_short, d_long)
+
+    cnt_val_long := tmp_cnt
+
+    fail_this_bar := tmp_fail
+
+    setup_created_this_bar := tmp_created
+
+// ==========================================
+
+// MA Cloud & Indicators
+
+// ==========================================
+
+float sma50 = ta.sma(close, 50)
+
+float sma200 = ta.sma(close, 200)
+
+var line l_sma50 = na
+
+var label lbl_sma50 = na
+
+if barstate.islast
+
+    if na(l_sma50)
+
+        l_sma50 := line.new(bar_index, sma50, bar_index + 1, sma50, color=color.new(color.gray, 30), width=1, style=line.style_dotted)
+
+        lbl_sma50 := label.new(bar_index + 1, sma50, text="S50 = " + str.tostring(sma50, "#,###.##"), style=label.style_label_left, color=color.new(themeTextCol, 100), textcolor=color.new(color.gray, 30), size=size.small)
+
+    else
+
+        line.set_x1(l_sma50, bar_index)
+
+        line.set_x2(l_sma50, bar_index + 1)
+
+        line.set_y1(l_sma50, sma50)
+
+        line.set_y2(l_sma50, sma50)
+
+        label.set_x(lbl_sma50, bar_index + 1)
+
+        label.set_y(lbl_sma50, sma50)
+
+        label.set_text(lbl_sma50, "S50 = " + str.tostring(sma50, "#,###.##"))
+
+var line l_sma200 = na
+
+var label lbl_sma200 = na
+
+if barstate.islast
+
+    if na(l_sma200)
+
+        l_sma200 := line.new(bar_index, sma200, bar_index + 1, sma200, color=color.new(color.gray, 30), width=1, style=line.style_dotted)
+
+        lbl_sma200 := label.new(bar_index + 1, sma200, text="S200 = " + str.tostring(sma200, "#,###.##"), style=label.style_label_left, color=color.new(themeTextCol, 100), textcolor=color.new(color.gray, 30), size=size.small)
+
+    else
+
+        line.set_x1(l_sma200, bar_index)
+
+        line.set_x2(l_sma200, bar_index + 1)
+
+        line.set_y1(l_sma200, sma200)
+
+        line.set_y2(l_sma200, sma200)
+
+        label.set_x(lbl_sma200, bar_index + 1)
+
+        label.set_y(lbl_sma200, sma200)
+
+        label.set_text(lbl_sma200, "S200 = " + str.tostring(sma200, "#,###.##"))
+
+var color currentCloudColor = cloudNeutralColor
+
+if close > MAHigh
+
+    currentCloudColor := cloudUpColor
+
+else if close < MALow
+
+    currentCloudColor := cloudDownColor
+
+else
+
+    currentCloudColor := cloudNeutralColor
+
+pHigh = plot(MAHigh, title='MA High', color=color.new(color.rgb(99, 99, 99), 20), linewidth=1)
+
+plot(ema21, title='EMA21', color=ema21Color, linewidth=1)
+
+pLow = plot(MALow, title='MA Low', color=color.new(color.rgb(99, 99, 99), 20), linewidth=1)
+
+fill(pHigh, pLow, color=currentCloudColor, title='Price-Based Cloud')
+
+// Apply Adjustable MA Structure bar-color grammar.
+
+// Final bar color is applied after all signal states are known.
+
+sma10_weekly = request.security(syminfo.tickerid, "W", ta.sma(close, 10))
+
+sma10_weeklyColor = sma10_weekly > sma10_weekly[1] ? color.green : sma10_weekly < sma10_weekly[1] ? color.red : color.gray
+
+plot(sma10_weekly, title='SMA10 Weekly', color=sma10_weeklyColor, linewidth=2)
+
+var line l_sma10w = na
+
+var label lbl_sma10w = na
+
+if barstate.islast
+
+    if na(l_sma10w)
+
+        l_sma10w := line.new(bar_index, sma10_weekly, bar_index + 5, sma10_weekly, color=sma10_weeklyColor, width=1, style=line.style_dotted)
+
+        lbl_sma10w := label.new(bar_index + 5, sma10_weekly, text="SMA10W = " + str.tostring(sma10_weekly, "#,###.##"), style=label.style_label_left, color=color.new(color.white, 100), textcolor=sma10_weeklyColor, size=lblSize)
+
+    else
+
+        line.set_x1(l_sma10w, bar_index)
+
+        line.set_y1(l_sma10w, sma10_weekly)
+
+        line.set_y2(l_sma10w, sma10_weekly)
+
+        label.set_x(lbl_sma10w, bar_index + 5)
+
+        label.set_y(lbl_sma10w, sma10_weekly)
+
+        label.set_text(lbl_sma10w, "SMA10W = " + str.tostring(sma10_weekly, "#,###.##"))
+
+        label.set_textcolor(lbl_sma10w, sma10_weeklyColor)
+
+// =========================================================================
+
+// --- Advanced Relative Strength Rating Filter (Seed Based) ---
+
+// =========================================================================
+
+grp_rs_adv = 'Screener Requirements (RS Rating)'
+
+use_rs_rating = input.bool(false, "Require Minimum RS Rating", group=grp_rs_adv)
+
+rsFilterLevel = input.int(80, "Minimum RS Rating Threshold", group=grp_rs_adv)
+
+index = input.symbol('SPX', 'Index to Compare (RS Benchmark)', group=grp_rs_adv)
+
+n63 = 63
+
+n126 = 126
+
+n189 = 189
+
+n252 = 252
+
+allowReplay = false
+
+closeDa = request.security(syminfo.tickerid, 'D', close)
+
+spxCloseDa = request.security(index, 'D', close)
+
+perfTicker63 = closeDa / closeDa[n63]
+
+perfTicker126 = closeDa / closeDa[n126]
+
+perfTicker189 = closeDa / closeDa[n189]
+
+perfTicker252 = closeDa / closeDa[n252]
+
+perfComp63 = spxCloseDa / spxCloseDa[n63]
+
+perfComp126 = spxCloseDa / spxCloseDa[n126]
+
+perfComp189 = spxCloseDa / spxCloseDa[n189]
+
+perfComp252 = spxCloseDa / spxCloseDa[n252]
+
+float rs_stock = 0.4 * perfTicker63 + 0.2 * perfTicker126 + 0.2 * perfTicker189 + 0.2 * perfTicker252
+
+float rs_ref = 0.4 * perfComp63 + 0.2 * perfComp126 + 0.2 * perfComp189 + 0.2 * perfComp252
+
+float totalRsScore = rs_stock / rs_ref * 100
+
+float totalRsRating = -1
+
+curveRsPerf = request.seed('seed_fred6725_rs_rating', 'RSRATING', close)
+
+delta = ta.barssince(not na(curveRsPerf))
+
+var array<float> different_values = array.new_float(7)
+
+var int counter = 0
+
+float first = 0
+
+float scnd = 0
+
+float thrd = 0
+
+float frth = 0
+
+float ffth = 0
+
+float sxth = 0
+
+float svth = 0
+
+if not allowReplay
+
+    for i = delta to 34 + delta by 1
+
+        close_value = nz(curveRsPerf[i])
+
+        if not array.includes(different_values, close_value) and counter < 7 and close_value != 0
+
+            array.set(different_values, counter, close_value)
+
+            counter := counter + 1
+
+    first := array.get(different_values, 0)
+
+    scnd  := array.get(different_values, 1)
+
+    thrd  := array.get(different_values, 2)
+
+    frth  := array.get(different_values, 3)
+
+    ffth  := array.get(different_values, 4)
+
+    sxth  := array.get(different_values, 5)
+
+    svth  := array.get(different_values, 6)
+
+if totalRsScore >= first
+
+    totalRsRating := 99
+
+if totalRsScore <= svth
+
+    totalRsRating := 1
+
+f_attributePercentile(t_score, tallerPerf, smallerPerf, rangeUp, rangeDn, weight) =>
+
+    sum = t_score + (t_score - smallerPerf) * weight
+
+    if sum > tallerPerf - 1
+
+        sum := tallerPerf - 1
+
+    k1 = smallerPerf / rangeDn
+
+    k2 = (tallerPerf - 1) / rangeUp
+
+    k3 = (k1 - k2) / (tallerPerf - 1 - smallerPerf)
+
+    RsRating = sum / (k1 - k3 * (t_score - smallerPerf))
+
+    if RsRating > rangeUp
+
+        RsRating := rangeUp
+
+    if RsRating < rangeDn
+
+        RsRating := rangeDn
+
+    RsRating
+
+if totalRsScore < first and totalRsScore >= scnd
+
+    totalRsRating := f_attributePercentile(totalRsScore, first, scnd, 98, 90, 0.33)
+
+if totalRsScore < scnd and totalRsScore >= thrd
+
+    totalRsRating := f_attributePercentile(totalRsScore, scnd, thrd, 89, 70, 2.1)
+
+if totalRsScore < thrd and totalRsScore >= frth
+
+    totalRsRating := f_attributePercentile(totalRsScore, thrd, frth, 69, 50, 0)
+
+if totalRsScore < frth and totalRsScore >= ffth
+
+    totalRsRating := f_attributePercentile(totalRsScore, frth, ffth, 49, 30, 0)
+
+if totalRsScore < ffth and totalRsScore >= sxth
+
+    totalRsRating := f_attributePercentile(totalRsScore, ffth, sxth, 29, 10, 0)
+
+if totalRsScore < sxth and totalRsScore >= svth
+
+    totalRsRating := f_attributePercentile(totalRsScore, sxth, svth, 9, 2, 0)
+
+for i = 0 to 6 by 1
+
+    if nz(array.get(different_values, i)) == 0 and not allowReplay
+
+        totalRsRating := -1
+
+bool pass_rs_rating = use_rs_rating ? totalRsRating >= rsFilterLevel : true
+
+plot(totalRsRating, title="RS Rating", display=display.none)
+
+// =========================================================================
+
+// --- Fundamental Screener Filters (Sales Growth) ---
+
+// =========================================================================
+
+grp_fund = 'Screener Requirements (Fundamentals)'
+
+use_sales_growth = input.bool(false, "Require Positive Sales Growth (YoY)", group=grp_fund)
+
+revenue_ttm = request.financial(syminfo.tickerid, "TOTAL_REVENUE", "TTM", ignore_invalid_symbol=true)
+
+revenue_ttm_prev = revenue_ttm[252]
+
+float sales_growth = na
+
+if not na(revenue_ttm) and not na(revenue_ttm_prev) and revenue_ttm_prev != 0
+
+    sales_growth := ((revenue_ttm - revenue_ttm_prev) / math.abs(revenue_ttm_prev)) * 100
+
+bool pass_sales = use_sales_growth ? sales_growth > 0 : true
+
+plot(sales_growth, title="Sales Growth YoY %", display=display.none)
+
+// =========================================================================
+
+// --- Base Screener Filters (ADR/ATR/SMA) ---
+
+// =========================================================================
+
+grp_scr_flt = 'Screener Requirements (ADR/ATR/SMA)'
+
+use_adrp = input.bool(false, "Require Minimum ADR%", group=grp_scr_flt)
+
+adr_len = input.int(20, "ADR% Length", group=grp_scr_flt)
+
+adr_min = input.float(4.0, "Min ADR% Threshold", group=grp_scr_flt)
+
+use_atrp = input.bool(false, "Require Minimum ATR%", group=grp_scr_flt)
+
+atr_len = input.int(14, "ATR% Length", group=grp_scr_flt)
+
+atr_min = input.float(4.0, "Min ATR% Threshold", group=grp_scr_flt)
+
+use_50sma = input.bool(false, "Require Close > 50 SMA", group=grp_scr_flt)
+
+float adr_high = ta.sma(high, adr_len)
+
+float adr_low = ta.sma(low, adr_len)
+
+float adrp = (adr_high - adr_low) / close * 100
+
+float atr_abs = ta.rma(ta.tr(true), atr_len)
+
+float atrp = atr_abs / close * 100
+
+bool pass_adr = use_adrp ? adrp >= adr_min : true
+
+bool pass_atr = use_atrp ? atrp >= atr_min : true
+
+bool pass_sma = use_50sma ? close > sma50 : true
+
+// =========================================================================
+
+// --- NOW.Squeeze Screener Filter ---
+
+// =========================================================================
+
+grp_scr_sqz = 'Screener Requirements (NOW.Squeeze)'
+
+use_squeeze = input.bool(false, "Require EMA Squeeze Breakout (Buy Signal)", group=grp_scr_sqz, tooltip="Requires the stock to have just exited an EMA compression zone into bullish expansion.")
+
+sqz_lenFast = input.int(3, "Fast EMA Length", group=grp_scr_sqz)
+
+sqz_lenSlow = input.int(28, "Slow EMA Length", group=grp_scr_sqz)
+
+sqz_atrLen = input.int(14, "ATR Length", minval=1, group=grp_scr_sqz)
+
+sqz_sqThresh = input.float(0.5, "Squeeze Threshold (ATR)", step=0.05, group=grp_scr_sqz)
+
+sqz_emaFast = ta.ema(close, sqz_lenFast)
+
+sqz_emaSlow = ta.ema(close, sqz_lenSlow)
+
+sqz_sma50 = ta.sma(close, 50)
+
+sqz_spread = sqz_emaFast - sqz_emaSlow
+
+sqz_atr = ta.atr(sqz_atrLen)
+
+sqz_spreadATR = sqz_spread / sqz_atr
+
+sqz_inSqueeze = math.abs(sqz_spreadATR) <= sqz_sqThresh
+
+sqz_justLeft = not sqz_inSqueeze and sqz_inSqueeze[1]
+
+sqz_buyCond = close > sqz_sma50 and sqz_justLeft and sqz_spreadATR > 0 and close > close[1]
+
+bool pass_squeeze = use_squeeze ? sqz_buyCond : true
+
+plot(sqz_buyCond ? 1 : 0, title="Scan: NOW.Squeeze Breakout", display=display.data_window)
+
+// MOMENTUM BURST
+
+percent_breakout = close > sma50 and close / close[1] >= 1.04 and close > open and close - open >= close[1] - open[1] and close > close[1] and volume >= 100000 and volume > volume[1] and (close - low) / (high - low) >= 0.7 and close[1] / close[2] <= 1.02
+
+dollar_breakout = close - open >= 0.9 and close > open and close - open >= close[1] - open[1] and close > close[1] and volume >= 100000 and (close - low) / (high - low) >= 0.7 and close[1] / close[2] <= 1.02
+
+// COMBINED LOGIC GATE
+
+bool pass_all_filters = pass_adr and pass_atr and pass_sma and pass_rs_rating and pass_sales and pass_squeeze
+
+plot(adrp, title="ADR%", display=display.none)
+
+plot(atrp, title="ATR%", display=display.none)
+
+plot(sma50, title="SMA 50", display=display.none)
+
+plot(sma200, title="SMA 200", color=color.red, display=display.none)
+
+// --- Alerts ---
+
+float current_stop_l = d_long.phase == 1 ? ma_stop : d_long.phase == 2 ? d_long.fib_1st_price : math.max(d_long.fib_1st_price, ma_stop)
+
+var float last_ll_val = na
+
+if not na(win_long)
+
+    last_ll_val := win_long.prev_p
+
+bool alert_2nd_break = pass_all_filters and not na(win_long) and win_long.is_setup and not na(win_long.break_val) and ta.crossover(high, win_long.break_val)
+
+bool alert_1st_break = pass_all_filters and not na(win_long) and win_long.is_setup and not na(d_long.fib_1st_price) and ta.crossover(high, d_long.fib_1st_price)
+
+bool alert_tp1_hit = pass_all_filters and not na(win_long) and win_long.is_setup and not na(d_long.tp1_price) and ta.crossover(high, d_long.tp1_price)
+
+bool alert_tp2_hit = pass_all_filters and not na(win_long) and win_long.is_setup and not na(d_long.tp2_price) and ta.crossover(high, d_long.tp2_price)
+
+bool alert_stop_hit = pass_all_filters and not na(win_long) and win_long.is_setup and ta.crossunder(low, current_stop_l) and not setup_created_this_bar
+
+bool alert_cnt_break = pass_all_filters and not na(cnt_val_long) and ta.crossover(high, cnt_val_long) and not fail_this_bar
+
+bool alert_ll_break = pass_all_filters and not na(last_ll_val) and ta.crossunder(low, last_ll_val)
+
+if alert_1st_break
+
+    alert("1st Pivot Break | " + syminfo.ticker + " | Price: " + str.tostring(close, "#,###.##"), alert.freq_once_per_bar)
+
+if alert_2nd_break
+
+    alert("2nd Pivot Break | " + syminfo.ticker + " | Price: " + str.tostring(close, "#,###.##"), alert.freq_once_per_bar)
+
+if alert_tp1_hit
+
+    alert("TP1 Hit | " + syminfo.ticker + " | Price: " + str.tostring(close, "#,###.##"), alert.freq_once_per_bar)
+
+if alert_tp2_hit
+
+    alert("TP2 Hit | " + syminfo.ticker + " | Price: " + str.tostring(close, "#,###.##"), alert.freq_once_per_bar)
+
+if alert_stop_hit
+
+    alert("Stop Hit | " + syminfo.ticker + " | Price: " + str.tostring(close, "#,###.##"), alert.freq_once_per_bar)
+
+if alert_ll_break
+
+    alert("Lower Low Break | " + syminfo.ticker + " | Price: " + str.tostring(close, "#,###.##"), alert.freq_once_per_bar)
+
+if alert_cnt_break
+
+    alert("Counter Trend Break | " + syminfo.ticker + " | Price: " + str.tostring(close, "#,###.##"), alert.freq_once_per_bar)
+
+// --- Screener Signals ---
+
+bool rt_1st_break = pass_all_filters and not na(win_long) and win_long.is_setup and not na(d_long.fib_1st_price) and close[1] <= d_long.fib_1st_price and close > d_long.fib_1st_price and (na(win_long.break_val) or close <= win_long.break_val)
+
+bool rt_2nd_break = pass_all_filters and not na(win_long) and win_long.is_setup and not na(win_long.break_val) and close[1] <= win_long.break_val and close > win_long.break_val and (na(d_long.tp1_price) or close <= d_long.tp1_price)
+
+bool rt_tp1_hit = pass_all_filters and not na(win_long) and win_long.is_setup and not na(d_long.tp1_price) and close[1] <= d_long.tp1_price and close > d_long.tp1_price and (na(d_long.tp2_price) or close <= d_long.tp2_price)
+
+bool rt_tp2_hit = pass_all_filters and not na(win_long) and win_long.is_setup and not na(d_long.tp2_price) and close[1] <= d_long.tp2_price and close > d_long.tp2_price
+
+bool rt_stop_hit = pass_all_filters and not na(win_long) and win_long.is_setup and close[1] >= current_stop_l and close < current_stop_l
+
+bool rt_ll_break = pass_all_filters and not na(last_ll_val) and close[1] >= last_ll_val and close < last_ll_val
+
+bool rt_cnt_break = pass_all_filters and not na(cnt_val_long) and close[1] <= cnt_val_long and close > cnt_val_long
+
+alertcondition(alert_1st_break, "1st Pivot Break 1", "Today broke above 1st Pivot. Price: {{close}}")
+
+alertcondition(alert_2nd_break, "2nd Pivot Break 1", "Today broke above 2nd Pivot. Price: {{close}}")
+
+alertcondition(rt_1st_break, "1st Pivot Break", "Today broke above 1st Pivot. Price: {{close}}")
+
+alertcondition(rt_2nd_break, "2nd Pivot Break", "Today broke above 2nd Pivot. Price: {{close}}")
+
+alertcondition(percent_breakout, title="Stockbee 4% Breakout", message="🚀 {{ticker}} has triggered a 4% Momentum Burst Breakout!")
+
+alertcondition(rt_tp1_hit, "TP1 Hit", "Today broke above TP1. Price: {{close}}")
+
+alertcondition(rt_tp2_hit, "TP2 Hit", "Today broke above TP2. Price: {{close}}")
+
+alertcondition(rt_stop_hit, "Stop Hit", "Today broke below current-phase stop. Price: {{close}}")
+
+alertcondition(rt_ll_break, "Lower Low Break", "Today broke below LL. Price: {{close}}")
+
+alertcondition(rt_cnt_break, "Counter Trend Break", "Today broke above Counter Trend Line. Price: {{close}}")
+
+// ============================================================================
+// ROSS HABER CONSOLIDATION PIVOT / LAUNCHPAD INTEGRATION
+// Advanced Structure Pivot remains the STRUCTURAL AUTHORITY.
+// Candidate Haber CP = ASP 2nd Pivot (the highest resistance between LL and HL).
+// ============================================================================
+
+grp_haber = 'Haber CP · Structure'
+haber_enable = input.bool(true, 'Enable Consolidation Pivot Context', group=grp_haber)
+haber_base_len = input.int(120, 'Base Lookback', minval=40, maxval=300, group=grp_haber)
+haber_lower_half_max = input.float(60.0, 'Max CP Position in Base (%)', minval=35.0, maxval=80.0, step=1.0, group=grp_haber, tooltip='0% = base low, 100% = base high. A lower value is stricter.')
+haber_approach_pct = input.float(8.0, 'CP Approach Distance (%)', minval=1.0, maxval=20.0, step=0.5, group=grp_haber)
+haber_max_break_ext = input.float(3.0, 'Fresh Break Max Extension (%)', minval=0.5, maxval=10.0, step=0.25, group=grp_haber)
+haber_trend_len = input.int(8, 'Declining-Tops Pivot Length', minval=4, maxval=20, group=grp_haber)
+haber_block_below_trend = input.bool(true, 'Block CP Action Below Declining-Tops Line', group=grp_haber)
+haber_confluence_tol = input.float(1.25, 'CP / Trendline Confluence Tolerance (%)', minval=0.1, maxval=5.0, step=0.05, group=grp_haber)
+haber_show_trendline = input.bool(true, 'Show Haber Declining-Tops Line', group=grp_haber)
+
+grp_haber_pad = 'Haber CP · Launchpad'
+haber_pad_mode = input.string('Short 10/21/23', 'Launchpad MA Set', options=['Short 10/21/23','Full 10/21/23/50/65/200'], group=grp_haber_pad)
+haber_max_ma_spread = input.float(3.0, 'Max MA Bunch Spread (%)', minval=0.25, maxval=10.0, step=0.25, group=grp_haber_pad)
+haber_ma_slope_lb = input.int(5, 'MA Turning-Up Lookback', minval=1, maxval=20, group=grp_haber_pad)
+haber_require_pad = input.bool(true, 'Require Launchpad for ACTIONABLE', group=grp_haber_pad)
+
+grp_haber_quality = 'Haber CP · Quality'
+haber_vol_len = input.int(50, 'Volume Average Length', minval=10, maxval=100, group=grp_haber_quality)
+haber_break_rvol = input.float(1.20, 'Preferred Breakout RVOL', minval=0.5, maxval=5.0, step=0.10, group=grp_haber_quality)
+haber_tight_fast = input.int(5, 'Recent Tightness Length', minval=2, maxval=15, group=grp_haber_quality)
+haber_tight_slow = input.int(20, 'Normal Range Length', minval=10, maxval=60, group=grp_haber_quality)
+haber_tight_ratio = input.float(0.80, 'Tight Range Ratio', minval=0.30, maxval=1.20, step=0.05, group=grp_haber_quality)
+haber_dry_ratio = input.float(0.85, 'Dry-Up Volume Ratio', minval=0.30, maxval=1.20, step=0.05, group=grp_haber_quality)
+haber_fresh_bars = input.int(3, 'Recent CP Break Age', minval=0, maxval=20, group=grp_haber_quality)
+haber_show_labels = input.bool(true, 'Show CP State Labels', group=grp_haber_quality)
+
+// ASP authority levels.
+haber_has_asp_setup = haber_enable and not na(win_long) and win_long.is_setup and not na(win_long.break_val)
+haber_cp = haber_has_asp_setup ? win_long.break_val : na
+haber_first = haber_has_asp_setup ? d_long.fib_1st_price : na
+haber_hl = haber_has_asp_setup ? win_long.curr_p : na
+haber_ll = haber_has_asp_setup ? win_long.prev_p : na
+
+// Base-location context for the ASP 2nd Pivot.
+haber_base_high = ta.highest(high, haber_base_len)
+haber_base_low = ta.lowest(low, haber_base_len)
+haber_base_range = haber_base_high - haber_base_low
+haber_cp_pos = haber_has_asp_setup and haber_base_range > 0.0 ? (haber_cp - haber_base_low) / haber_base_range * 100.0 : na
+haber_lower_half = haber_has_asp_setup and not na(haber_cp_pos) and haber_cp_pos <= haber_lower_half_max
+haber_dist_cp = haber_has_asp_setup and haber_cp > 0.0 ? (haber_cp - close) / haber_cp * 100.0 : na
+haber_approach = haber_has_asp_setup and not na(haber_dist_cp) and haber_dist_cp >= -haber_max_break_ext and haber_dist_cp <= haber_approach_pct
+
+// Independent declining-tops line. This is a HABER governor, not ASP authority.
+haber_major_ph = ta.pivothigh(high, haber_trend_len, haber_trend_len)
+var float haber_prev_top = na
+var int haber_prev_top_bar = na
+var float haber_t1 = na
+var float haber_t2 = na
+var int haber_x1 = na
+var int haber_x2 = na
+var line haber_line = na
+if not na(haber_major_ph)
+    haber_major_bar = bar_index - haber_trend_len
+    if not na(haber_prev_top) and haber_major_ph < haber_prev_top
+        haber_t1 := haber_prev_top
+        haber_x1 := haber_prev_top_bar
+        haber_t2 := haber_major_ph
+        haber_x2 := haber_major_bar
+        line.delete(haber_line)
+        if haber_show_trendline
+            haber_line := line.new(haber_x1, haber_t1, haber_x2, haber_t2, extend=extend.right, color=color.new(color.fuchsia, 15), width=2)
+    haber_prev_top := haber_major_ph
+    haber_prev_top_bar := haber_major_bar
+haber_trend_valid = not na(haber_x1) and not na(haber_x2) and haber_x2 > haber_x1 and haber_t2 < haber_t1
+haber_trend_slope = haber_trend_valid ? (haber_t2 - haber_t1) / (haber_x2 - haber_x1) : na
+haber_trend_value = haber_trend_valid ? haber_t2 + haber_trend_slope * (bar_index - haber_x2) : na
+haber_trend_cleared = not haber_trend_valid or close > haber_trend_value
+haber_trend_ok = not haber_block_below_trend or haber_trend_cleared
+haber_confluence = haber_has_asp_setup and haber_trend_valid and not na(haber_trend_value) and haber_cp > 0.0 and math.abs(haber_cp - haber_trend_value) / haber_cp * 100.0 <= haber_confluence_tol
+
+// Launchpad underneath price.
+haber_sma10 = ta.sma(close, 10)
+haber_sma21 = ta.sma(close, 21)
+haber_ema23 = ta.ema(close, 23)
+haber_sma50 = ta.sma(close, 50)
+haber_ema65 = ta.ema(close, 65)
+haber_sma200 = ta.sma(close, 200)
+haber_short_max = math.max(haber_sma10, math.max(haber_sma21, haber_ema23))
+haber_short_min = math.min(haber_sma10, math.min(haber_sma21, haber_ema23))
+haber_full_max_1 = math.max(haber_short_max, math.max(haber_sma50, haber_ema65))
+haber_full_max = math.max(haber_full_max_1, haber_sma200)
+haber_full_min_1 = math.min(haber_short_min, math.min(haber_sma50, haber_ema65))
+haber_full_min = math.min(haber_full_min_1, haber_sma200)
+haber_use_full = haber_pad_mode == 'Full 10/21/23/50/65/200'
+haber_pad_max = haber_use_full ? haber_full_max : haber_short_max
+haber_pad_min = haber_use_full ? haber_full_min : haber_short_min
+haber_pad_ready = haber_use_full ? not na(haber_sma200) : not na(haber_ema23)
+haber_ma_spread = haber_pad_ready and close > 0.0 ? (haber_pad_max - haber_pad_min) / close * 100.0 : na
+haber_pad_beneath = haber_pad_ready and haber_pad_max < close
+haber_short_up = haber_sma10 > haber_sma10[haber_ma_slope_lb] and haber_sma21 > haber_sma21[haber_ma_slope_lb] and haber_ema23 > haber_ema23[haber_ma_slope_lb]
+haber_full_up_count = 0
+haber_full_up_count += haber_sma10 > haber_sma10[haber_ma_slope_lb] ? 1 : 0
+haber_full_up_count += haber_sma21 > haber_sma21[haber_ma_slope_lb] ? 1 : 0
+haber_full_up_count += haber_ema23 > haber_ema23[haber_ma_slope_lb] ? 1 : 0
+haber_full_up_count += haber_sma50 > haber_sma50[haber_ma_slope_lb] ? 1 : 0
+haber_full_up_count += haber_ema65 > haber_ema65[haber_ma_slope_lb] ? 1 : 0
+haber_full_up_count += haber_sma200 > haber_sma200[haber_ma_slope_lb] ? 1 : 0
+haber_pad_up = haber_use_full ? haber_full_up_count >= 4 : haber_short_up
+haber_launchpad = haber_pad_ready and not na(haber_ma_spread) and haber_ma_spread <= haber_max_ma_spread and haber_pad_beneath and haber_pad_up
+haber_pad_ok = not haber_require_pad or haber_launchpad
+
+// Tightness + volume dry-up + break volume.
+haber_vol_avg = ta.sma(volume, haber_vol_len)
+haber_prior_vol_avg = haber_vol_avg[1]
+haber_rvol = haber_prior_vol_avg > 0.0 ? volume / haber_prior_vol_avg : 0.0
+haber_vol_pickup = haber_rvol >= haber_break_rvol
+haber_tr = ta.tr(true)
+haber_fast_range = ta.sma(haber_tr, haber_tight_fast)
+haber_slow_range = ta.sma(haber_tr, haber_tight_slow)
+haber_range_tight = haber_slow_range > 0.0 and haber_fast_range / haber_slow_range <= haber_tight_ratio
+haber_fast_vol = ta.sma(volume, haber_tight_fast)
+haber_slow_vol = ta.sma(volume, haber_tight_slow)
+haber_volume_dry = haber_slow_vol > 0.0 and haber_fast_vol / haber_slow_vol <= haber_dry_ratio
+haber_tight_dry = haber_range_tight and haber_volume_dry
+
+// ASP 2nd Pivot break becomes the Haber CP break.
+haber_cp_break = haber_has_asp_setup and close > haber_cp and close[1] <= haber_cp
+haber_cp_ext = haber_cp_break and haber_cp > 0.0 ? (close - haber_cp) / haber_cp * 100.0 : na
+haber_break_fresh_price = haber_cp_break and not na(haber_cp_ext) and haber_cp_ext <= haber_max_break_ext
+haber_cp_ready = haber_has_asp_setup and haber_lower_half and haber_trend_ok and haber_pad_ok
+haber_actionable = haber_cp_break and haber_cp_ready and haber_break_fresh_price
+haber_high_quality = haber_actionable and haber_vol_pickup and haber_tight_dry
+haber_sweet_spot = haber_high_quality and haber_confluence
+haber_1st_qualified = rt_1st_break and haber_cp_ready
+
+var int haber_last_break_bar = na
+var int haber_last_state = 0
+var float haber_last_cp = na
+if haber_cp_break
+    haber_last_break_bar := bar_index
+    haber_last_cp := haber_cp
+    haber_last_state := haber_sweet_spot ? 5 : haber_high_quality ? 4 : haber_actionable ? 3 : 2
+haber_break_age = na(haber_last_break_bar) ? 999 : bar_index - haber_last_break_bar
+haber_recent_break = haber_break_age <= haber_fresh_bars
+
+// Quality score: structural authority first, then Ross Haber context.
+haber_score = 0
+haber_score += haber_has_asp_setup ? 2 : 0
+haber_score += haber_lower_half ? 1 : 0
+haber_score += haber_trend_ok ? 1 : 0
+haber_score += haber_launchpad ? 2 : 0
+haber_score += haber_range_tight ? 1 : 0
+haber_score += haber_volume_dry ? 1 : 0
+haber_score += haber_vol_pickup ? 1 : 0
+haber_score += haber_confluence ? 2 : 0
+haber_score += close > haber_sma50 ? 1 : 0
+haber_state = haber_sweet_spot ? 5 : haber_high_quality ? 4 : haber_actionable ? 3 : haber_cp_break ? 2 : haber_approach and haber_cp_ready ? 1 : 0
+haber_state_text = haber_state == 5 ? 'SWEET SPOT' : haber_state == 4 ? 'HIGH QUALITY' : haber_state == 3 ? 'ACTIONABLE CP BREAK' : haber_state == 2 ? 'CP BREAK WATCH' : haber_state == 1 ? 'CP APPROACH' : haber_cp_ready ? 'CP READY' : haber_has_asp_setup ? 'ASP SETUP · CP BLOCKED' : 'NO CP SETUP'
+
+if haber_show_labels and not vis_clean and haber_1st_qualified
+    label.new(bar_index, low, 'ASP 1ST · CP QUALIFIED', style=label.style_label_up, color=color.new(color.teal, 0), textcolor=color.white, size=size.tiny)
+if haber_show_labels and not vis_clean and haber_cp_break
+    haber_lbl_col = haber_sweet_spot ? color.lime : haber_high_quality ? color.green : haber_actionable ? color.teal : color.orange
+    label.new(bar_index, low, haber_state_text + '\n2nd/CP ' + str.tostring(haber_cp, '#,###.##'), style=label.style_label_up, color=haber_lbl_col, textcolor=color.white, size=size.small)
+
+// Haber screener outputs (chart-safe / data only).
+plot(haber_cp_ready ? 1 : 0, title='SCAN Haber CP Ready', display=display.none)
+plot(haber_approach and haber_cp_ready ? 1 : 0, title='SCAN Haber CP Approach', display=display.none)
+plot(haber_1st_qualified ? 1 : 0, title='SCAN ASP 1st CP Qualified', display=display.none)
+plot(haber_cp_break ? 1 : 0, title='SCAN Haber CP Break', display=display.none)
+plot(haber_actionable ? 1 : 0, title='SCAN Haber CP Actionable', display=display.none)
+plot(haber_high_quality ? 1 : 0, title='SCAN Haber CP High Quality', display=display.none)
+plot(haber_sweet_spot ? 1 : 0, title='SCAN Haber CP Sweet Spot', display=display.none)
+plot(haber_recent_break ? 1 : 0, title='SCAN Haber Recent CP Break', display=display.none)
+plot(haber_state, title='SCAN Haber State', display=display.none)
+plot(haber_score, title='SCAN Haber Quality Score', display=display.none)
+plot(haber_cp, title='SCAN Haber CP Level', display=display.none)
+plot(haber_dist_cp, title='SCAN Haber Distance CP %', display=display.none)
+plot(haber_cp_pos, title='SCAN Haber CP Base Position %', display=display.none)
+plot(haber_launchpad ? 1 : 0, title='SCAN Haber Launchpad', display=display.none)
+plot(haber_ma_spread, title='SCAN Haber MA Spread %', display=display.none)
+plot(haber_trend_cleared ? 1 : 0, title='SCAN Haber Trendline Cleared', display=display.none)
+plot(haber_confluence ? 1 : 0, title='SCAN Haber CP Trendline Confluence', display=display.none)
+plot(haber_tight_dry ? 1 : 0, title='SCAN Haber Tight Dry', display=display.none)
+plot(haber_rvol, title='SCAN Haber RVOL', display=display.none)
+plot(haber_break_age, title='SCAN Haber CP Break Age', display=display.none)
+
+alertcondition(haber_1st_qualified, 'ASP 1st · CP Qualified', 'ASP 1st Pivot cleared with qualified Haber CP context. Price: {{close}}')
+alertcondition(haber_cp_break, 'Haber CP / ASP 2nd Break', 'ASP 2nd Pivot / Haber Consolidation Pivot broke. Price: {{close}}')
+alertcondition(haber_actionable, 'Haber CP Actionable', 'Actionable ASP 2nd / Haber CP break. Price: {{close}}')
+alertcondition(haber_high_quality, 'Haber CP High Quality', 'High-quality ASP 2nd / Haber CP break. Price: {{close}}')
+alertcondition(haber_sweet_spot, 'Haber CP Sweet Spot', 'ASP 2nd / Haber CP Sweet Spot. Price: {{close}}')
+
+// ============================================================================
+
+
+// ============================================================================
+// NOW.ATR INTEGRATED MODULE · ATR EXTENSION LADDER + STAGE ANALYSIS
+// Namespaced where required to coexist with ASP/CP host logic.
+// ASP remains structural/signal authority; ATR supplies extension/risk/trend context.
+// ============================================================================
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// INPUT SETTINGS — THEME
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var atrx_g_theme  = 'NOW.ATR · Theme'
+
+atrx_isDarkMode   = input.bool(true, 'Dark Mode (White Text)', group = atrx_g_theme)
+
+atrx_themeTextCol = atrx_isDarkMode ? color.white : color.black
+
+atrx_themeHeadBg  = atrx_isDarkMode ? color.new(color.black, 0) : color.new(color.silver, 20)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// INPUT SETTINGS — MOVING AVERAGE
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+ma_length = input.int(50, title = 'Moving Average Length', minval = 1, group = 'NOW.ATR · Baseline')
+
+ma_type   = input.string('SMA', title = 'Moving Average Type', options = ['SMA', 'EMA', 'WMA', 'RMA'], group = 'NOW.ATR · Baseline')
+
+ma_source = input.source(close, title = 'MA Source', group = 'NOW.ATR · Baseline')
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// INPUT SETTINGS — ATR
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+atr_length    = input.int(14, title = 'ATR Length', minval = 1, group = 'ATR Settings')
+
+atr_smoothing = input.string('RMA', title = 'ATR Smoothing', options = ['RMA', 'SMA', 'EMA', 'WMA'], group = 'ATR Settings')
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// INPUT SETTINGS — EXTENSION LEVELS
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+show_extensions = input.bool(true,  title = 'Show Extension Levels', group = 'NOW.ATR · Display')
+
+num_levels      = input.int(9,     title = 'Number of Extension Levels', minval = 3, maxval = 20, group = 'NOW.ATR · Display')
+
+level_spacing   = input.float(1.0,  title = 'Level Spacing (ATR Multiples)', minval = 0.1, step = 0.1, group = 'NOW.ATR · Display')
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// INPUT SETTINGS — QUANTVUE / MA OPTIONS
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var g1 = 'NOW.ATR · ATR Options'
+
+extMult = input.float(5.0, 'Extension Multiple for MA color', group = g1)
+
+var g2 = 'NOW.ATR · Moving Averages'
+
+maLen   = input.int(50, 'SMA50 Length', minval = 1, inline = '1', group = g2)
+
+maLen2  = input.int(21, 'EMA21 Length', minval = 1, inline = '2', group = g2)
+
+maLen3  = input.int(9, 'EMA9 Length', minval = 1, inline = '3', group = g2)
+
+maLen4  = input.int(200, 'SMA200 Length', minval = 1, inline = '4', group = g2)
+
+maType4 = input.string('SMA', 'Type', options = ['EMA', 'SMA'], inline = '4', group = g2)
+
+maType3 = input.string('EMA', 'Type', options = ['EMA', 'SMA'], inline = '3', group = g2)
+
+maType2 = input.string('EMA', 'Type', options = ['EMA', 'SMA'], inline = '2', group = g2)
+
+maType  = input.string('SMA', 'Type', options = ['EMA', 'SMA'], inline = '1', group = g2)
+
+maWidth = input.int(4, 'MA Thickness', minval = 1, maxval = 5, step = 1, group = g2)
+
+var g3 = 'NOW.ATR · MA Colors'
+
+upCol    = input.color(color.green,  'Low > MA Color',   inline = '2', group = g3)
+
+dnCol    = input.color(color.yellow, 'Low <= MA Color',  inline = '2', group = g3)
+
+extUpCol = input.color(color.red,    'Extended Up',      inline = '3', group = g3)
+
+extDnCol = input.color(color.aqua,   'Extended Down',    inline = '3', group = g3)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// INPUT SETTINGS — ATR MULTI-CLOUD (CANDLE COLOR)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var g4 = 'NOW.ATR · ATR Multi-Cloud'
+
+useAtrCandleColor = input.bool(false,  'Use ATR Multi-Cloud candle color (overrides RSI)', group = g4)
+
+atrSafe_thresh    = input.float(4, 'SAFE threshold (ATR multiples from MA)',    step = 0.1, group = g4)
+
+atrStretch_thresh = input.float(7, 'STRETCH threshold (ATR multiples from MA)', step = 0.1, group = g4)
+
+col_safe          = input.color(color.new(#26a69a, 100), 'SAFE color',     group = g4)
+
+col_stretch       = input.color(color.rgb(255, 179, 0, 50), 'STRETCH color',  group = g4)
+
+col_extended      = input.color(color.rgb(255, 4, 0, 50), 'EXTENDED color', group = g4)
+
+//col_below         = input.color(color.new(#008cff, 100), 'BELOW MA color', group = g4)
+
+showAtrCloud      = input.bool(true,  "Show ATR Cloud",                               group = g4)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// INPUT SETTINGS — ATR MATRIX
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+atrLen     = input.int(14,    "ATR Length")
+
+entryPrice = input.float(0.0, "Entry Price (0 = Use Close)", minval = 0.0, step = 0.01)
+
+//stopX      = input.float(1.5, "Stop Multiple (for Reward/Risk)", step = 0.1, minval = 0.1)
+
+rrTargetATR = input.int(8, "R/R Target (ATR level from SMA50)", minval = 1, maxval = 11, step = 1)
+
+showDetails = input.bool(false, "Details", inline = "Details")
+
+decimals   = input.int(2, "Decimals", minval = 0, step = 6)
+
+showTicker = input.bool(true, "Show symbol/block")
+
+showRR     = input.bool(true, "Show Return Max & Reward/Risk")
+
+tableSize  = input.string("normal", "Table Text Size", options = ["tiny","small","normal","large","huge"])
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// INPUT SETTINGS — VISUAL / COLORS / ALERTS
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+show_labels   = input.bool(true, title = 'Show Level Labels', group = 'Visual')
+
+extend_lines  = input.int(50,   title = 'Extend Lines (Bars)',  minval = 0, group = 'Visual')
+
+extend_lines2 = input.int(100,  title = 'Extend Lines (Bars)',  minval = 0, group = 'Visual')
+
+ma_color      = input.color(color.new(color.blue, 0),   title = 'Moving Average Color', group = 'NOW.ATR · Colors')
+
+bull_color    = input.color(color.new(color.green, 80), title = 'Upper Levels Color',   group = 'NOW.ATR · Colors')
+
+bear_color    = input.color(color.new(color.red, 80),   title = 'Lower Levels Color',   group = 'NOW.ATR · Colors')
+
+neutral_color = input.color(color.new(color.gray, 70),  title = 'Neutral Zone Color',   group = 'NOW.ATR · Colors')
+
+alert_level   = input.float(10.0, title = 'Alert at ATR Multiple', minval = 1.0, group = 'NOW.ATR · Alerts')
+
+enable_alerts = input.bool(false, title = 'Enable Extension Alerts', group = 'NOW.ATR · Alerts')
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// INPUT SETTINGS — RSI ENSEMBLE
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+OVERBOUGHT_LEVEL          = input.float(80, 'Overbought Level', minval = 50, maxval = 100)
+
+OVERSOLD_LEVEL            = input.float(30, 'Oversold Level',   minval = 0,  maxval = 50)
+
+COLOR_SURELY_OVERBOUGHT   = input.color(color.new(#ff0000, 0), 'Surely Overbought Color')
+
+COLOR_PROBABLY_OVERBOUGHT = input.color(color.new(#ffa500, 0), 'Probably Overbought Color')
+
+COLOR_SLIGHTLY_OVERBOUGHT = input.color(color.new(#ffff00, 0), 'Slightly Overbought Color')
+
+COLOR_SURELY_OVERSOLD     = input.color(color.new(#00ff3c, 0), 'Surely Oversold Color')
+
+COLOR_PROBABLY_OVERSOLD   = input.color(color.new(#2ecc53, 0), 'Probably Oversold Color')
+
+COLOR_SLIGHTLY_OVERSOLD   = input.color(color.new(#c4e0a3, 0), 'Slightly Oversold Color')
+
+COLOR_NEUTRAL             = input.color(#000000, 'Neutral Color')
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// INPUT SETTINGS — INFO TABLE POSITION + STAGE ANALYSIS
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var g_table = "NOW.ATR · Matrix Table"
+
+table_position = input.string("bottom_center", "Table Position", options = ["top_left","top_center","top_right","middle_left","middle_center","middle_right","bottom_left","bottom_center","bottom_right"], group = g_table)
+
+var g_stage = "NOW.ATR · Stage Analysis"
+
+lenATR_st        = input.int(14,    "ATR Length (Stage)",              group = g_stage)
+
+lenEMA10         = input.int(10,    "EMA10 Length",                    group = g_stage)
+
+lenSMA20         = input.int(20,    "SMA20 Length",                    group = g_stage)
+
+lenSMA50_st      = input.int(50,    "SMA50 Length",                    group = g_stage)
+
+boLookback       = input.int(20,    "Breakout/Breakdown Lookback",     minval = 5, group = g_stage)
+
+basingBandATR    = input.float(1.0, "1A: Price within ±ATR of SMA50", step = 0.1, group = g_stage)
+
+maCompressionATR = input.float(1.5, "1A: MA spread ≤ x ATR",          step = 0.1, group = g_stage)
+
+showStageRows    = input.bool(true,  "Show Stage Rows in Table",       group = g_stage)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// TABLE POSITION HELPER
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+f_pos(p) =>
+
+    switch p
+
+        "top_left"      => position.top_left
+
+        "top_center"    => position.top_center
+
+        "top_right"     => position.top_right
+
+        "middle_left"   => position.middle_left
+
+        "middle_center" => position.middle_center
+
+        "middle_right"  => position.middle_right
+
+        "bottom_left"   => position.bottom_left
+
+        "bottom_center" => position.bottom_center
+
+        => position.bottom_right
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// CORE CALCULATIONS — ATR / MAs
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+atr  = ta.atr(atr_length)
+
+atr2 = (ta.atr(atr_length) / close) * 100
+
+// Four independent MA series. Defaults: SMA50 / EMA21 / EMA9 / SMA200.
+ma  = maType  == 'SMA' ? ta.sma(close, maLen)  : ta.ema(close, maLen)
+
+ma2 = maType2 == 'EMA' ? ta.ema(close, maLen2) : ta.sma(close, maLen2)
+
+ma3 = maType3 == 'EMA' ? ta.ema(close, maLen3) : ta.sma(close, maLen3)
+
+ma4 = maType4 == 'SMA' ? ta.sma(close, maLen4) : ta.ema(close, maLen4)
+
+percent_above_ema21 = (close - ma2) / ma2 * 100
+
+percent_above_ema9  = (close - ma3) / ma3 * 100
+
+atrRatio          = atr / close
+
+extATR2           = (close - ma2) / atr
+
+extRatio2         = close / ma2 - 1.0
+
+extATRasPctOfATR2 = atrRatio == 0 ? na : extRatio2 / atrRatio
+
+extATR3           = (close - ma3) / atr
+
+extRatio3         = close / ma3 - 1.0
+
+extATRasPctOfATR3 = atrRatio == 0 ? na : extRatio3 / atrRatio
+
+lowVma  = low - ma
+
+highVma  = ma  - high
+
+rsiPos  = lowVma  / atr
+
+rsiNeg  = highVma  / atr
+
+lowVma2 = low - ma2
+
+highVma2 = ma2 - high
+
+rsiPos2 = lowVma2 / atr
+
+rsiNeg2 = highVma2 / atr
+
+lowVma3 = low - ma3
+
+highVma3 = ma3 - high
+
+rsiPos3 = lowVma3 / atr
+
+rsiNeg3 = highVma3 / atr
+
+posCol  = rsiPos  >= extMult ? extUpCol : rsiPos  >= 0 ? upCol : rsiPos  < 0 and rsiNeg  < 0 ? upCol : color.new(atrx_themeTextCol, 100)
+
+negCol  = rsiNeg  >= extMult ? extDnCol : rsiNeg  > 0 ? dnCol : rsiPos  < 0 and rsiNeg  < 0 ? dnCol : color.new(atrx_themeTextCol, 100)
+
+posCol2 = rsiPos2 >= extMult ? extUpCol : rsiPos2 >= 0 ? upCol : rsiPos2 < 0 and rsiNeg2 < 0 ? upCol : color.new(atrx_themeTextCol, 100)
+
+negCol2 = rsiNeg2 >= extMult ? extDnCol : rsiNeg2 > 0 ? dnCol : rsiPos2 < 0 and rsiNeg2 < 0 ? dnCol : color.new(atrx_themeTextCol, 100)
+
+posCol3 = rsiPos3 >= extMult ? extUpCol : rsiPos3 >= 0 ? upCol : rsiPos3 < 0 and rsiNeg3 < 0 ? upCol : color.new(atrx_themeTextCol, 100)
+
+negCol3 = rsiNeg3 >= extMult ? extDnCol : rsiNeg3 > 0 ? dnCol : rsiPos3 < 0 and rsiNeg3 < 0 ? dnCol : color.new(atrx_themeTextCol, 100)
+
+// SMA200 gets its own distance/color state.
+// Previously the SMA200 plot reused SMA50's ma/posCol/negCol logic.
+lowVma4  = low - ma4
+highVma4 = ma4 - high
+rsiPos4  = lowVma4 / atr
+rsiNeg4  = highVma4 / atr
+
+posCol4 = rsiPos4 >= extMult ? extUpCol : rsiPos4 >= 0 ? upCol : rsiPos4 < 0 and rsiNeg4 < 0 ? upCol : color.new(atrx_themeTextCol, 100)
+negCol4 = rsiNeg4 >= extMult ? extDnCol : rsiNeg4 > 0 ? dnCol : rsiPos4 < 0 and rsiNeg4 < 0 ? dnCol : color.new(atrx_themeTextCol, 100)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// CORE CALCULATIONS — ATR MATRIX
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+atrx_sma50    = ta.sma(close, maLen)  // canonical SMA50 anchor used by ATR ladder
+
+ent      = entryPrice > 0 ? entryPrice : close
+
+cur      = close
+
+extATR   = (cur - atrx_sma50) / atr
+
+extRatio = cur / atrx_sma50 - 1.0
+
+extATRasPctOfATR = atrRatio == 0 ? na : extRatio / atrRatio
+
+// ── Stop reference: EMA 21 of Lows (matches Advanced Structure Pivot logic) ──
+
+ema21Low = ta.ema(low, 21)
+
+atrFromStop = (cur - ema21Low) / atr
+
+// ── Declare persistent objects ──
+
+var line  l_ema21Low   = na
+
+var label lbl_ema21Low = na
+
+// ── In your barstate.islast drawing block ──
+
+if barstate.islast
+
+    if na(l_ema21Low)
+
+        l_ema21Low := line.new(bar_index, ema21Low, bar_index + 1, ema21Low, color = color.new(color.red, 30), width = 1, style = line.style_dotted)
+
+        lbl_ema21Low := label.new(bar_index + 1, ema21Low, text = "EMA21 Low = " + str.tostring(ema21Low, "#,###.##"), style = label.style_label_left, color = color.new(atrx_themeTextCol, 100), textcolor = color.new(color.red, 30), size = size.small)
+
+    else
+
+        line.set_x1(l_ema21Low, bar_index)
+
+        line.set_x2(l_ema21Low, bar_index + 1)
+
+        line.set_y1(l_ema21Low, ema21Low)
+
+        line.set_y2(l_ema21Low, ema21Low)
+
+        label.set_x(lbl_ema21Low, bar_index + 1)
+
+        label.set_y(lbl_ema21Low, ema21Low)
+
+        label.set_text(lbl_ema21Low, "E21L = " + str.tostring(ema21Low, "#,###.##"))
+
+f_lvl_from_entry(m)           => ent   + m * atr
+
+f_lvl_from_sma(n)             => atrx_sma50 + n * atr
+
+f_lvl_from_sma_atr_percent(n) => atrx_sma50 * (1 + (n * atr2 / 100))
+
+levels  = array.new_float()
+
+levels2 = array.new_float()
+
+levels3 = array.new_float()
+
+for i = 0 to 11
+
+    array.push(levels,  f_lvl_from_sma(i))
+
+    array.push(levels2, f_lvl_from_sma_atr_percent(i))
+
+    array.push(levels3, ema21Low + i * atr)
+
+retMaxRatio     = (array.get(levels, 8) - ent) * 100 / ent
+
+riskSma         = ent - atrx_sma50  
+
+rewardSma       = array.get(levels, rrTargetATR) - ent  // levels = SMA50 + n×ATR 
+
+rr              = (riskSma > 0 and rewardSma > 0) ? rewardSma / riskSma : na
+
+fpx(v)  => na(v) ? "" : str.tostring(math.round(v * math.pow(10, decimals)) / math.pow(10, decimals))
+
+fpct(v) => str.tostring(v, format.percent)
+
+// ── Declare persistent objects (place with other var declarations near top) ──
+
+// Host ASP already supplies canonical SMA label/line objects.
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// CORE CALCULATIONS — BASELINE / DISTANCES
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+get_ma(src, length, ma_type) =>
+
+    switch ma_type
+
+        'SMA' => ta.sma(src, length)
+
+        'EMA' => ta.ema(src, length)
+
+        'WMA' => ta.wma(src, length)
+
+        'RMA' => ta.rma(src, length)
+
+        => ta.sma(src, length)
+
+baseline            = get_ma(ma_source, ma_length, ma_type)
+
+percent_above_sma50 = (close - baseline) / baseline * 100
+
+price_distance      = extATRasPctOfATR
+
+price_distance2     = extATRasPctOfATR2
+
+price_distance3     = extATRasPctOfATR3
+
+price_distance4     = (close - atrx_sma50) / atr
+
+price_distance5     = (close - ma2)   / atr
+
+price_distance6     = (close - ma3)   / atr
+
+atr3                = (atr / atrx_sma50) * 100
+
+grp_dots          = 'NOW.ATR · ATRx Dots'
+
+atrx_lvl_7        = input.float(7.0,  'ATRx 7× level',  step=0.1, group=grp_dots, inline="atrx7_11")
+
+atrx_lvl_8        = input.float(8.0,  'ATRx 8× level',  step=0.1, group=grp_dots, inline="atrx7_11")
+
+atrx_lvl_9        = input.float(9.0,  'ATRx 9× level',  step=0.1, group=grp_dots, inline="atrx7_11")
+
+atrx_lvl_10       = input.float(10.0, 'ATRx 10× level', step=0.1, group=grp_dots, inline="atrx7_11")
+
+atrx_lvl_11       = input.float(11.0, 'ATRx 11× level', step=0.1, group=grp_dots, inline="atrx7_11")
+
+show_atrx_dots    = input.bool(true,  title='Show ATR× dots (≥7×)',        group=grp_dots)
+
+input_char        = input.string("・", title="ATRx dot character", group=grp_dots)
+
+// Dots Plot (Core Stats)
+
+gain_from_ma_pct = (close / atrx_sma50) - 1.0
+
+atr_pct_daily    = atr / close
+
+atrx_from_sma50  = (na(atrx_sma50) or atrx_sma50 == 0 or na(atr) or atr <= 0) ? na : (gain_from_ma_pct / atr_pct_daily)
+
+cond_11 = show_atrx_dots and atrx_from_sma50 >= atrx_lvl_11
+
+cond_10 = show_atrx_dots and atrx_from_sma50 >= atrx_lvl_10 and atrx_from_sma50 < atrx_lvl_11
+
+cond_9  = show_atrx_dots and atrx_from_sma50 >= atrx_lvl_9  and atrx_from_sma50 < atrx_lvl_10
+
+cond_8  = show_atrx_dots and atrx_from_sma50 >= atrx_lvl_8  and atrx_from_sma50 < atrx_lvl_9
+
+cond_7  = show_atrx_dots and atrx_from_sma50 >= atrx_lvl_7  and atrx_from_sma50 < atrx_lvl_8
+
+// plot-budget: ATRx dot visual disabled; condition retained for calculations
+
+// plot-budget: ATRx dot visual disabled; condition retained for calculations
+
+// plot-budget: ATRx dot visual disabled; condition retained for calculations
+
+// plot-budget: ATRx dot visual disabled; condition retained for calculations
+
+// plot-budget: ATRx dot visual disabled; condition retained for calculations
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// CORE CALCULATIONS — STAGE ANALYSIS
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+ema10_st    = ta.ema(close, lenEMA10)
+
+sma20_st    = ta.sma(close, lenSMA20)
+
+sma50_st    = ta.sma(close, lenSMA50_st)
+
+atr_st      = ta.atr(lenATR_st)
+
+atrx_st     = (close - sma50_st) / atr_st
+
+maSpread_st = math.max(math.max(ema10_st, sma20_st), sma50_st) - math.min(math.min(ema10_st, sma20_st), sma50_st)
+
+ema10Up_st = ema10_st > ema10_st[1]
+
+sma20Up_st = sma20_st > sma20_st[1]
+
+sma50Up_st = sma50_st > sma50_st[1]
+
+upAlign_st   = close > ema10_st and ema10_st > sma20_st and sma20_st > sma50_st and ema10Up_st and sma20Up_st and sma50Up_st
+
+downAlign_st = close < ema10_st and ema10_st < sma20_st and sma20_st < sma50_st and not ema10Up_st and not sma20Up_st and not sma50Up_st
+
+breakout_st  = close > ta.highest(high, boLookback)[1]
+
+breakdown_st = close < ta.lowest(low,  boLookback)[1]
+
+extBull_st   = upAlign_st   and atrx_st >= 7
+
+extBear_st   = downAlign_st and atrx_st <= -7
+
+basing_st  = math.abs(close - sma50_st) <= basingBandATR * atr_st and maSpread_st <= maCompressionATR * atr_st
+
+meanRev_st = not upAlign_st and not downAlign_st and not basing_st and close >= sma20_st and ema10_st >= sma20_st
+
+fadeA_st   = not extBull_st and close >= sma50_st and ((upAlign_st and (close < ema10_st or not ema10Up_st)) or (ema10_st >= sma20_st and close < ema10_st))
+
+fadeB_st   = not extBear_st and close >= sma50_st and ema10_st < sma20_st
+
+ST_1A=1, ST_1B=2, ST_2A=3, ST_2B=4, ST_2C=5, ST_3A=6, ST_3B=7, ST_4A=8, ST_4B=9, ST_4C=10
+
+stage = if extBull_st
+
+    ST_2C
+
+else if extBear_st
+
+    ST_4C
+
+else if upAlign_st
+
+    breakout_st ? ST_2B : ST_2A
+
+else if downAlign_st
+
+    breakdown_st ? ST_4B : ST_4A
+
+else if fadeB_st
+
+    ST_3B
+
+else if fadeA_st
+
+    ST_3A
+
+else if meanRev_st
+
+    ST_1B
+
+else
+
+    ST_1A
+
+stageName = if stage == ST_1A
+
+    "1A Basing"
+
+else if stage == ST_1B
+
+    "1B Mean Reversion"
+
+else if stage == ST_2A
+
+    "2A Bullish Trend"
+
+else if stage == ST_2B
+
+    "2B Breakout Confirm"
+
+else if stage == ST_2C
+
+    "2C Extended Bullish (>=7x)"
+
+else if stage == ST_3A
+
+    "3A Bullish Fade"
+
+else if stage == ST_3B
+
+    "3B Fade Confirm"
+
+else if stage == ST_4A
+
+    "4A Bearish Trend"
+
+else if stage == ST_4B
+
+    "4B Breakdown Confirm"
+
+else
+
+    "4C Extended Bearish (<=-7x)"
+
+stagePosition = if stage == ST_1A or stage == ST_1B
+
+    "BASING"
+
+else if stage == ST_2A or stage == ST_2B or stage == ST_2C
+
+    "ADVANCING"
+
+else if stage == ST_3A or stage == ST_3B
+
+    "DISTRIBUTION"
+
+else
+
+    "DECLINING"
+
+stageColor = if stage == ST_2A or stage == ST_2B or stage == ST_2C
+
+    color.new(color.green, 30)
+
+else if stage == ST_1A or stage == ST_1B
+
+    color.new(color.orange, 30)
+
+else if stage == ST_3A or stage == ST_3B
+
+    color.new(color.blue, 30)
+
+else
+
+    color.new(color.red, 30)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ATR MATRIX TABLE (bottom center)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var table tbl = na
+
+int COLS = 16
+
+c0=0,c1=1,c2=2,c3=3,c4=4,c5=5,c6=6,c7=7,c8=8,c9=9,c10=10,c11=11,c12=12,c13=13,c14=14,c15=15 
+
+colBase    = color.new(color.silver, 10)
+
+colHead    = atrx_themeHeadBg
+
+colStop    = color.new(color.red, 0)
+
+colEntry   = color.new(color.teal, 0)
+
+colHold    = color.new(color.yellow, 0)
+
+colScale   = color.new(color.orange, 0)
+
+colNeutral = color.new(color.gray, 0)
+
+// AFTER — remove "xATR% from SMA50", shift everything left:
+
+hdr = array.from("","ATR $","ATR %","Last","xATR","1xATR","2xATR","3xATR","4xATR","5xATR","6xATR","7xATR","8xATR","9xATR","Return Max","R(8ATR/MA)")
+
+getHeadColor(i) =>i>=c11 and i<=c13 ? colStop : i>=c8 and i<=c10 ? colScale : i>=c5 and i<=c7 ? colEntry : i>=c15 ? colNeutral : colHead
+
+getBodyColor(i) => getHeadColor(i)
+
+// Dynamic cell color: ATR Ext — (close - SMA50) / ATR
+
+f_xatrBg(v) =>
+
+    na(v)  ? colNeutral :v <= 3 ? color.new(color.green,  20) :   v <= 6 ? color.new(color.orange, 20) :   color.new(color.red,    20)    
+
+// ── Dynamic cell color: Reward/Risk (3:1 minimum) ──
+
+f_rrBg(v) =>
+
+    na(v)  ? colNeutral :v >= 2 ? color.new(color.green,  20) :  v >= 1 ? color.new(color.orange, 20) :   color.new(color.red,    20)     
+
+// ATR/Stop buffer color — how many ATRs of cushion above EMA21 Low stop
+
+f_stopBufBg(v) =>
+
+    na(v)  ? colNeutral :v >= 2 ? color.new(color.green,  20) :  v >= 1 ? color.new(color.orange, 20) :    color.new(color.red,    20)     
+
+if barstate.islast
+
+    if na(tbl)
+        tbl := table.new(f_pos(table_position), columns = COLS, rows = 4, border_width = 1)
+
+    for col = 0 to COLS - 1
+
+        table.cell(tbl, col, 0, array.get(hdr, col), text_color = atrx_themeTextCol, text_halign = text.align_center, bgcolor = getHeadColor(col), text_size = tableSize)
+
+// ── Calc EMA21 Low return max & R Multiple ──
+
+retMaxRatioEma = (array.get(levels3, 8) - ent) * 100 / ent
+
+stopPriceEma   = ema21Low
+
+riskEma        = ent - stopPriceEma
+
+rewardEma      = array.get(levels3, rrTargetATR) - ent
+
+rrEma          = (riskEma > 0 and rewardEma > 0) ? rewardEma / riskEma : na
+
+if barstate.islast
+
+    // ── ROW 1: SMA50 anchor ──
+
+    table.cell(tbl, c3, 1, fpx(cur),                                    text_color = atrx_themeTextCol, bgcolor = getBodyColor(c0), text_size = tableSize)
+
+    table.cell(tbl, c1, 1, fpx(atr),                                    text_color = atrx_themeTextCol, bgcolor = getBodyColor(c1), text_size = tableSize)
+
+    table.cell(tbl, c2, 1, fpct(atr2),                                  text_color = atrx_themeTextCol, bgcolor = getBodyColor(c2), text_size = tableSize)
+
+    table.cell(tbl, c4, 1, str.tostring(extATR, "#.#") + " ATR", text_color = atrx_themeTextCol, bgcolor = f_xatrBg(extATR), text_size = tableSize)
+
+    //table.cell(tbl, c4, 1, "",                                           bgcolor = getBodyColor(c1), text_size = tableSize)
+
+    table.cell(tbl, c0, 1, "SMA50 " + fpx(atrx_sma50),                      text_color = atrx_themeTextCol, bgcolor = getBodyColor(c4), text_size = tableSize)
+
+    for k = 1 to 9
+
+        table.cell(tbl, c5 + (k - 1), 1, fpx(array.get(levels,  k)),   text_color = atrx_themeTextCol, bgcolor = getBodyColor(c5 + (k - 1)), text_size = tableSize)
+
+        //table.cell(tbl, c6 + (k - 1), 2, fpx(array.get(levels2, k)),   text_color = atrx_themeTextCol, bgcolor = getBodyColor(c6 + (k - 1)), text_size = tableSize)
+
+        table.cell(tbl, c5 + (k - 1), 2, fpx(array.get(levels3, k)),   text_color = atrx_themeTextCol, bgcolor = getBodyColor(c5 + (k - 1)), text_size = tableSize)
+
+    // ── ROW 3: EMA21 Low anchor label cells ──
+
+    table.cell(tbl, c3, 2, "",                                           bgcolor = getBodyColor(c1), text_size = tableSize)
+
+    table.cell(tbl, c1, 2, "",                                           bgcolor = getBodyColor(c1), text_size = tableSize)
+
+    table.cell(tbl, c2, 2, "",                                           bgcolor = getBodyColor(c2), text_size = tableSize)
+
+    //table.cell(tbl, c3, 3, "",                                           bgcolor = getBodyColor(c3), text_size = tableSize)
+
+    table.cell(tbl, c4, 2, str.tostring(atrFromStop, "#.#") + " ATR",  text_color = atrx_themeTextCol, bgcolor = f_stopBufBg(atrFromStop), text_size = tableSize)
+
+    table.cell(tbl, c0, 2, "EMA21L " + fpx(ema21Low),                   text_color = atrx_themeTextCol, bgcolor = color.new(color.orange, 20), text_size = tableSize)
+
+    if showRR
+
+        // SMA50 row — Return Max & R col empty (R is in EMA21 row)
+
+        table.cell(tbl, c14, 1, fpct(retMaxRatio),text_color = atrx_themeTextCol, bgcolor = getBodyColor(c14), text_size = tableSize)
+
+        table.cell(tbl, c15, 1,  na(rr) ? "-" : str.tostring(rr, "#.##") + "R", text_color = atrx_themeTextCol, bgcolor = f_rrBg(rrEma), text_size = tableSize)
+
+        // EMA21 row — Return Max & R Multiple
+
+        table.cell(tbl, c14, 2, fpct(retMaxRatioEma),                    text_color = atrx_themeTextCol, bgcolor = getBodyColor(c14), text_size = tableSize)
+
+        table.cell(tbl, c15, 2, na(rrEma) ? "-" : str.tostring(rrEma, "#.##") + "R", text_color = atrx_themeTextCol, bgcolor = f_rrBg(rrEma), text_size = tableSize)
+
+    else
+
+        table.cell(tbl, c14, 1, "", bgcolor = getBodyColor(c14), text_size = tableSize)
+
+        table.cell(tbl, c15, 1, "", bgcolor = getBodyColor(c15), text_size = tableSize)
+
+        table.cell(tbl, c14, 2, "", bgcolor = getBodyColor(c14), text_size = tableSize)
+
+        table.cell(tbl, c15, 2, "", bgcolor = getBodyColor(c15), text_size = tableSize)
+
+
+    if showStageRows
+        table.cell(tbl, c0, 3, "STAGE", text_color = atrx_themeTextCol, bgcolor = stageColor, text_size = tableSize)
+        table.cell(tbl, c1, 3, stageName, text_color = atrx_themeTextCol, bgcolor = stageColor, text_size = tableSize)
+        table.cell(tbl, c2, 3, stagePosition, text_color = atrx_themeTextCol, bgcolor = stageColor, text_size = tableSize)
+        table.cell(tbl, c3, 3, "ATRx", text_color = atrx_themeTextCol, bgcolor = stageColor, text_size = tableSize)
+        table.cell(tbl, c4, 3, str.tostring(atrx_st, "#.##"), text_color = atrx_themeTextCol, bgcolor = stageColor, text_size = tableSize)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// EXTENSION LEVELS — CALCULATION & PLOTTING
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var extension_multipliers = array.new<float>()
+
+if barstate.isfirst
+
+    array.clear(extension_multipliers)
+
+    for i = 1 to num_levels by 1
+
+        multiplier = i * level_spacing
+
+        array.push(extension_multipliers, multiplier)
+
+        array.push(extension_multipliers, -multiplier)
+
+upper_levels  = array.new<float>()
+
+lower_levels  = array.new<float>()
+
+upper_levels2 = array.new<float>()
+
+lower_levels2 = array.new<float>()
+
+for i = 0 to array.size(extension_multipliers) - 1
+
+    multiplier = array.get(extension_multipliers, i)
+
+    level  = baseline + atr  * multiplier
+
+    level2 = baseline + atr3 * multiplier
+
+    if multiplier > 0
+
+        array.push(upper_levels,  level)
+
+        array.push(upper_levels2, level2)
+
+    else
+
+        array.push(lower_levels,  level)
+
+        array.push(lower_levels2, level2)
+
+if show_extensions and barstate.islast
+
+    for i = 0 to array.size(upper_levels) - 1 by 1
+
+        level_value = array.get(upper_levels, i)
+
+        k = i + 1
+
+        multiplier = k * level_spacing
+
+        color_transparency = math.min(90, 50 + multiplier * 3)
+
+        line_color   = color.new(bull_color, color_transparency)
+
+        label_bg_col = k <= 3 ? color.new(color.green, 40) : k <= 6 ? color.new(color.orange, 40) : color.new(color.red, 40)
+
+        line.new(x1 = bar_index - extend_lines, y1 = level_value, x2 = bar_index + extend_lines, y2 = level_value, color = line_color, width = 1, extend = extend.both, style = line.style_solid)
+
+        if show_labels
+
+            label.new(bar_index + extend_lines / 4, level_value, '+' + str.tostring(multiplier) + ' ATR (SMA50)',  style = label.style_label_left,  color = label_bg_col, textcolor = atrx_themeTextCol, size = size.small)
+
+            label.new(bar_index + extend_lines / 4, level_value, '$' + str.tostring(level_value, '#.##'), style = label.style_label_right, color = color.new(bull_color, 100), textcolor = atrx_themeTextCol, size = size.small)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// EMA21 LOW EXTENSION LEVELS — second set of plotted lines
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var bool show_ema21_extensions = input.bool(true, "Show EMA21 Low Extension Levels", group = "NOW.ATR · Display")
+var color ema21_line_color = input.color(color.new(color.orange, 0), "EMA21 Low Levels Color", group = "NOW.ATR · Colors")
+ema21_label_offset = input.int(5, "EMA21 Label Offset (bars left of SMA50 labels)", minval = 5, maxval = 500, step = 5, group = "NOW.ATR · Display")
+
+if show_ema21_extensions and barstate.islast
+    for k = 1 to 9
+        level_value = ema21Low + k * atr
+        color_transparency = math.min(90, 50 + k * 3)
+        line_color = color.new(ema21_line_color, color_transparency)
+        label_bg_col = k <= 3 ? color.new(color.green, 40) : k <= 6 ? color.new(color.orange, 40) : color.new(color.red, 40)
+        line.new(x1 = bar_index - extend_lines, y1 = level_value, x2 = bar_index + extend_lines, y2 = level_value, color = line_color, width = 1, extend = extend.both, style = line.style_dashed)
+        int lbl_x = bar_index + extend_lines / 4 + ema21_label_offset
+        if show_labels
+            label.new(lbl_x, level_value, "+" + str.tostring(k) + " ATR (E21L)", style = label.style_label_left, color = label_bg_col, textcolor = atrx_themeTextCol, size = size.small)
+            label.new(lbl_x, level_value, "$" + str.tostring(level_value, "#.##"), style = label.style_label_right, color = color.new(ema21_line_color, 100), textcolor = atrx_themeTextCol, size = size.small)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// BACKGROUND COLOR
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+bg_color = if math.abs(price_distance) >= alert_level
+
+    price_distance > 0 ? color.new(bull_color, 95) : color.new(bear_color, 95)
+
+else if math.abs(price_distance) >= 3.0
+
+    price_distance > 0 ? color.new(bull_color, 98) : color.new(bear_color, 98)
+
+else
+
+    na
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ATR MULTI-CLOUD — distance scores per MA anchor
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+atrDist_sma50  = (close - atrx_sma50) / atr
+
+atrDist_ema21  = (close - ma2)   / atr
+
+atrDist_ema10  = (close - ma3)   / atr
+
+atrDist_sma200 = (close - ma4)   / atr
+
+f_status(d) =>
+
+    d >= atrStretch_thresh ? 'EXTENDED' :
+
+     d >= atrSafe_thresh    ? 'STRETCH'  :
+
+     d >= 0                 ? 'SAFE'     : 'BELOW'
+
+f_statusCol(d) =>
+
+    d >= atrStretch_thresh ? col_extended :
+
+     d >= atrSafe_thresh    ? col_stretch  :
+
+     d >= 0                 ? col_safe     : na
+
+atrCloud_candleColor =
+
+     atrDist_sma50 >= atrStretch_thresh ? col_extended :
+
+     atrDist_sma50 >= atrSafe_thresh    ? col_stretch  :
+
+     atrDist_sma50 >= 0                 ? col_safe     : na
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ATR MULTI-CLOUD — Fill between Close and SMA50
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── MA plots (moved here so f_statusCol is already defined above) ──
+
+// plot-budget: duplicate NOW.ATR MA visual disabled; MA calculation retained
+
+// plot-budget: duplicate NOW.ATR MA visual disabled; MA calculation retained
+
+// plot-budget: duplicate NOW.ATR MA visual disabled; MA calculation retained
+
+// plot-budget: duplicate NOW.ATR MA visual disabled; MA calculation retained
+
+// ── Declare persistent objects (place with other var declarations near top) ──
+
+// Host ASP already supplies canonical SMA label/line objects.
+
+// ── ATR Cloud fill between close and SMA50 ──
+
+// ── 3 fixed horizontal band plots ──
+
+safeLevel    = atrx_sma50 + atrSafe_thresh    * atr
+
+stretchLevel = atrx_sma50 + atrStretch_thresh * atr
+
+// ── Determine which zone close is in ──
+
+inSafe     = close > atrx_sma50        and close <= safeLevel
+
+inStretch  = close > safeLevel    and close <= stretchLevel
+
+inExtended = close > stretchLevel
+
+// ── Plot SMA50 as base anchor ──
+
+// plot-budget: ATR cloud base plot disabled; ASP MA cloud remains visual authority
+
+// ── Plot close ONLY when in each zone, else na ──
+
+// plot-budget: ATR SAFE cloud top disabled
+
+// plot-budget: ATR STRETCH cloud top disabled
+
+// plot-budget: ATR EXTENDED cloud top disabled
+
+// ── Fill between SMA50 and close for each zone ──
+
+// plot-budget: ATR SAFE fill disabled
+
+// plot-budget: ATR STRETCH fill disabled
+
+// plot-budget: ATR EXTENDED fill disabled
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// RSI ENSEMBLE
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+rsi14 = ta.rsi(close, 14)
+
+rsi9  = ta.rsi(close, 9)
+
+rsi5  = ta.rsi(close, 5)
+
+overboughtScore = (rsi14 > OVERBOUGHT_LEVEL ? 1 : 0) + (rsi9 > OVERBOUGHT_LEVEL ? 1 : 0) + (rsi5 > OVERBOUGHT_LEVEL ? 1 : 0)
+
+oversoldScore   = (rsi14 < OVERSOLD_LEVEL   ? 1 : 0) + (rsi9 < OVERSOLD_LEVEL   ? 1 : 0) + (rsi5 < OVERSOLD_LEVEL   ? 1 : 0)
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// LINEAR REGRESSION — Trend Direction
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var g5 = 'NOW.ATR · Linear Regression'
+
+lengthregression  = input.int(30,  'Short LinReg Length', minval = 1, group = g5)
+
+lengthregression2 = input.int(90,  'Long LinReg Length',  minval = 1, group = g5)
+
+lrc  = ta.linreg(close, lengthregression,  0)
+
+lrc2 = ta.linreg(close, lengthregression2, 0)
+
+// SMA50-FIRST BAR COLOR REGIME
+// Price vs SMA50 controls bullish/bearish direction. SMA50 slope controls strength.
+// RSI can modify emphasis but can no longer turn a bearish downtrend lime/green.
+themeNeutralCandle = atrx_isDarkMode ? color.new(color.white, 72) : color.new(color.gray, 65)
+sma50Up = atrx_sma50 > atrx_sma50[1]
+sma50Down = atrx_sma50 < atrx_sma50[1]
+aboveSma50 = close >= atrx_sma50
+belowSma50 = close < atrx_sma50
+bullStrongCol = color.new(color.lime, 0)
+bullWeakCol = color.new(color.green, 28)
+bearStrongCol = color.new(color.red, 0)
+bearWeakCol = color.new(color.red, 45)
+transitionCol = themeNeutralCandle
+trendBarColor = aboveSma50 and sma50Up ? bullStrongCol : belowSma50 and sma50Down ? bearStrongCol : aboveSma50 ? bullWeakCol : belowSma50 ? bearWeakCol : transitionCol
+rsiAwareBarColor = belowSma50 ? (oversoldScore >= 2 ? color.new(color.red, 18) : trendBarColor) : aboveSma50 ? (overboughtScore >= 2 ? color.new(color.orange, 8) : trendBarColor) : trendBarColor
+atrxCombinedCandleColor = useAtrCandleColor and not na(atrCloud_candleColor) ? atrCloud_candleColor : rsiAwareBarColor
+// Integrated into ASP finalBarColor authority below; no standalone barcolor() here.
+
+rsiStatusLabel = switch
+
+    oversoldScore   == 3 => "Surely Oversold"
+
+    oversoldScore   == 2 => "Probably Oversold"
+
+    oversoldScore   == 1 => "Slightly Oversold"
+
+    overboughtScore == 3 => "Surely Overbought"
+
+    overboughtScore == 2 => "Probably Overbought"
+
+    overboughtScore == 1 => "Slightly Overbought"
+
+    => "Neutral"
+
+rsiStatusColor = switch
+
+    oversoldScore   == 3 => COLOR_SURELY_OVERSOLD
+
+    oversoldScore   == 2 => COLOR_PROBABLY_OVERSOLD
+
+    oversoldScore   == 1 => COLOR_SLIGHTLY_OVERSOLD
+
+    overboughtScore == 3 => COLOR_SURELY_OVERBOUGHT
+
+    overboughtScore == 2 => COLOR_PROBABLY_OVERBOUGHT
+
+    overboughtScore == 1 => COLOR_SLIGHTLY_OVERBOUGHT
+
+    => COLOR_NEUTRAL
+
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// INFO TABLE — POSITION CONTROLLED, WITH STAGE ROWS AT BOTTOM
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+//var table info_table = na
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ALERTS
+
+// ═══════════════════════════════════════════════════════════════════════════════
+
+upper_extreme1 = price_distance >= 10
+
+upper_extreme2 = price_distance >= alert_level
+
+lower_extreme  = price_distance <= -alert_level
+
+// plot-budget: NOW.ATR extreme shape visual disabled; state retained
+
+// plot-budget: NOW.ATR extreme shape visual disabled; state retained
+
+// plot-budget: NOW.ATR extreme shape visual disabled; state retained
+
+// ============================================================================
+// SIGNAL BAR COLOR OVERRIDE · v2.1.4
+// ============================================================================
+// Yellow = early/watch trigger.
+// Lime   = stronger confirmation / qualified CP trigger.
+//
+// Signal colors override the normal MA Structure candle grammar only on the
+// fresh signal bar. All other bars continue to use the existing structure color.
+
+// ============================================================================
+// SIGNAL BAR COLOR + IDENTITY · v2.1.4
+// ============================================================================
+// Yellow = watch / early signal.
+// Lime   = actionable / confirmation signal.
+//
+// Identity codes clarify WHY the candle was highlighted.
+//
+// SQZ = NOW.Squeeze fire
+// 4%  = Stockbee 4% burst
+// P1  = ASP 1st Pivot break
+// CP  = Haber CP break-watch
+// P2  = ASP 2nd Pivot break
+// A   = CP Actionable
+// HQ  = CP High Quality
+// SS  = CP Sweet Spot
+
+sig_sqz = sqz_buyCond
+sig_4pct = percent_breakout
+sig_p1 = rt_1st_break
+sig_cp = haber_cp_break and not haber_actionable and not haber_high_quality and not haber_sweet_spot
+sig_p2 = rt_2nd_break
+sig_cp_a = haber_actionable and not haber_high_quality and not haber_sweet_spot
+sig_cp_hq = haber_high_quality and not haber_sweet_spot
+sig_cp_ss = haber_sweet_spot
+
+signalBarYellow = sig_sqz or sig_4pct or sig_p1 or sig_cp
+signalBarLime = sig_p2 or sig_cp_a or sig_cp_hq or sig_cp_ss
+
+signalCode = ""
+if sig_sqz
+    signalCode := signalCode == "" ? "SQZ" : signalCode + "+SQZ"
+if sig_4pct
+    signalCode := signalCode == "" ? "4%" : signalCode + "+4%"
+if sig_p1
+    signalCode := signalCode == "" ? "P1" : signalCode + "+P1"
+if sig_cp
+    signalCode := signalCode == "" ? "CP" : signalCode + "+CP"
+if sig_p2
+    signalCode := signalCode == "" ? "P2" : signalCode + "+P2"
+if sig_cp_a
+    signalCode := signalCode == "" ? "A" : signalCode + "+A"
+if sig_cp_hq
+    signalCode := signalCode == "" ? "HQ" : signalCode + "+HQ"
+if sig_cp_ss
+    signalCode := signalCode == "" ? "SS" : signalCode + "+SS"
+
+showSignalCodeNow = showSignalIdentityCodes and (showSignalCodeOnClean or not vis_clean)
+signalLabelColor = signalBarLime ? signalLimeColor : signalBarYellow ? signalYellowColor : na
+signalTextColor = color.black
+
+color finalBarColor = changebarcol ? (useAtrTrendBarColor ? atrxCombinedCandleColor : structureBarColor) : na
+if highlightSignalBars and signalBarYellow
+    finalBarColor := signalYellowColor
+if highlightSignalBars and signalBarLime
+    finalBarColor := signalLimeColor
+
+barcolor(finalBarColor)
+
+if showSignalCodeNow and signalCode != ""
+    label.new(bar_index, low, signalCode, style=label.style_label_up, color=signalLabelColor, textcolor=signalTextColor, size=size.tiny)
+
+// DECISION DASHBOARD · STRUCTURE + SCREENING
+
+// ============================================================================
+
+screen_signal_now = rt_stop_hit ? "STOP HIT" : rt_ll_break ? "LL BREAK" : rt_tp2_hit ? "TP2 HIT" : rt_tp1_hit ? "TP1 HIT" : rt_2nd_break ? "2ND / CP BREAK" : rt_1st_break ? "1ST BREAK" : rt_cnt_break ? "COUNTER BREAK" : haber_sweet_spot ? "CP SWEET SPOT" : haber_high_quality ? "CP HIGH QUALITY" : haber_actionable ? "CP ACTIONABLE" : haber_cp_break ? "CP BREAK" : percent_breakout ? "4% BURST" : "NONE"
+
+has_setup_dash = not na(win_long) and win_long.is_setup
+
+has_levels_dash = has_setup_dash and not na(d_long.fib_1st_price)
+
+p_2nd_dash = has_setup_dash ? win_long.break_val : na
+
+p_hl_dash = has_setup_dash ? win_long.curr_p : na
+
+p_ll_dash = has_setup_dash ? win_long.prev_p : na
+
+p_1st_dash = has_levels_dash ? d_long.fib_1st_price : na
+
+p_tp1_dash = has_levels_dash ? d_long.tp1_price : na
+
+p_tp2_dash = has_levels_dash ? d_long.tp2_price : na
+
+p_stop_dash = has_levels_dash ? current_stop_l : na
+
+phase_dash = has_levels_dash ? (d_long.phase == 1 ? "P1 · MA TRAIL" : d_long.phase == 2 ? "P2 · 1ST FLOOR" : "P3 · RAISED STOP") : "—"
+
+asp_entry_live = has_levels_dash and (d_long.phase >= 2 or close >= p_1st_dash)
+asp_position_live = has_levels_dash and d_long.phase >= 2
+asp_runner_live = has_levels_dash and d_long.phase >= 3
+cp_subordinate = asp_entry_live
+cp_authority_text = cp_subordinate ? "HISTORICAL / SUBORDINATE" : haber_state_text
+
+unified_action = rt_stop_hit or rt_ll_break ? "PROTECT / EXIT" : asp_runner_live ? "MANAGE RUNNER" : asp_position_live ? "HOLD / MANAGE" : asp_entry_live ? "ENTRY LIVE" : haber_sweet_spot ? "CP SWEET SPOT" : haber_high_quality ? "CP HIGH QUALITY" : haber_actionable ? "CP ACTIONABLE" : haber_cp_break ? "CP BREAK WATCH" : haber_approach and haber_cp_ready ? "CP APPROACH" : haber_cp_ready ? "CP READY" : has_setup_dash ? "ASP SETUP" : "WAIT"
+
+unified_authority = asp_entry_live ? "ASP LIFECYCLE" : haber_has_asp_setup ? "CP SETUP CONTEXT" : "NO ACTIVE AUTHORITY"
+
+unified_next = rt_stop_hit or rt_ll_break ? "Risk authority failed. Protect capital and require a fresh structure." : asp_runner_live ? "Hold above raised Phase-3 stop " + str.tostring(p_stop_dash, "#,###.##") + "; TP2 " + str.tostring(p_tp2_dash, "#,###.##") + " remains the runner target." : asp_position_live ? "2nd Pivot confirmed. Hold above stop floor " + str.tostring(p_stop_dash, "#,###.##") + " and watch TP1 " + str.tostring(p_tp1_dash, "#,###.##") + "." : asp_entry_live ? "1st Pivot entry is live. 2nd Pivot " + str.tostring(p_2nd_dash, "#,###.##") + " is the confirmation level." : haber_sweet_spot ? "Best setup alignment is present. Watch the ASP 2nd / CP break and define risk before entry." : haber_cp_ready ? "CP owns setup context. Watch 1st Pivot first, then the ASP 2nd / CP shelf for confirmation." : has_setup_dash ? "ASP structure exists but CP quality is incomplete. Wait for trendline / Launchpad / location permission." : "Wait for a fresh LL → HL structure."
+
+tp1_pct_dash = has_levels_dash ? fmt_pct(d_long.tp1_pct_1st) + " / " + fmt_pct(d_long.tp1_pct_2nd) + " / " + fmt_pct(d_long.tp1_pct_avg) : "—"
+
+tp2_pct_dash = has_levels_dash ? fmt_pct(d_long.tp2_pct_1st) + " / " + fmt_pct(d_long.tp2_pct_2nd) + " / " + fmt_pct(d_long.tp2_pct_avg) : "—"
+
+string read_dash = "No active higher-low setup. Wait for a fresh structure."
+
+if has_levels_dash
+
+    read_dash := rt_stop_hit or rt_ll_break ? "Risk authority failed. Protect capital; CP context is no longer relevant until a fresh setup forms." : d_long.phase == 3 ? "ASP owns the trade now: TP1 achieved. Manage the runner with the raised Phase-3 stop." : d_long.phase == 2 ? "ASP owns the position now: 2nd Pivot confirmed. Hold above the 1st Pivot stop floor." : close >= p_1st_dash ? "ASP entry is live. CP remains context only; 2nd Pivot is confirmation." : not pass_all_filters ? "Structure exists, but enabled screener filters block qualification." : "CP owns setup context below entry. Watch the 1st Pivot for the first trigger."
+
+string gate_dash = pass_all_filters ? "PASS" : "BLOCK"
+
+string rs_dash = use_rs_rating ? (pass_rs_rating ? "PASS · " : "FAIL · ") + str.tostring(totalRsRating, "#") : "OFF · " + str.tostring(totalRsRating, "#")
+
+string sales_dash = use_sales_growth ? (pass_sales ? "PASS · " : "FAIL · ") + (na(sales_growth) ? "NA" : str.tostring(sales_growth, "#.##") + "%") : "OFF · " + (na(sales_growth) ? "NA" : str.tostring(sales_growth, "#.##") + "%")
+
+string adratr_dash = (use_adrp ? (pass_adr ? "ADR PASS " : "ADR FAIL ") : "ADR OFF ") + str.tostring(adrp, "#.##") + "% · " + (use_atrp ? (pass_atr ? "ATR PASS " : "ATR FAIL ") : "ATR OFF ") + str.tostring(atrp, "#.##") + "%"
+
+string trend_dash = (use_50sma ? (pass_sma ? "S50 PASS" : "S50 FAIL") : "S50 OFF") + " · " + (use_squeeze ? (pass_squeeze ? "SQZ PASS" : "SQZ FAIL") : "SQZ OFF")
+
+if barstate.islast and show_Table
+
+    table.delete(info_table)
+
+    info_table := table.new(get_table_position(table_pos), 5, 24, border_width=1, border_color=color.new(color.gray, 60), frame_width=1, frame_color=color.new(color.gray, 40))
+
+    bg_a = isDarkMode ? color.new(color.black, 74) : color.new(color.white, 8)
+
+    bg_b = isDarkMode ? color.new(color.black, 84) : color.new(color.silver, 78)
+
+    bg_good = color.new(color.teal, isDarkMode ? 78 : 82)
+
+    bg_bad = color.new(color.red, isDarkMode ? 82 : 88)
+
+    c_main = themeTextCol
+
+    c_muted = color.new(themeTextCol, 38)
+
+    c_good = color.new(color.teal, 0)
+
+    c_warn = color.rgb(230, 170, 20)
+
+    c_bad = color.rgb(255, 80, 80)
+
+    c_pivot = col_FirstPivot
+
+    fmt_dash = "#,###.##"
+
+    tbl_header(info_table, 0, 0, "LEVEL")
+
+    tbl_header(info_table, 1, 0, "PRICE")
+
+    tbl_header(info_table, 2, 0, "FIB")
+
+    tbl_header(info_table, 3, 0, "+% 1ST / 2ND / AVG")
+
+    tbl_header(info_table, 4, 0, "ROLE")
+
+    tbl_cell(info_table, 0, 1, "TP2", c_muted, bg_a)
+
+    tbl_price(info_table, 1, 1, not na(p_tp2_dash) ? str.tostring(p_tp2_dash, fmt_dash) : "—", c_muted, bg_a)
+
+    tbl_cell(info_table, 2, 1, fib_tp2_str, c_muted, bg_a)
+
+    tbl_cell(info_table, 3, 1, tp2_pct_dash, c_good, bg_a)
+
+    tbl_cell(info_table, 4, 1, "Runner target", c_muted, bg_a)
+
+    tbl_cell(info_table, 0, 2, "TP1", c_main, bg_b)
+
+    tbl_price(info_table, 1, 2, not na(p_tp1_dash) ? str.tostring(p_tp1_dash, fmt_dash) : "—", c_main, bg_b)
+
+    tbl_cell(info_table, 2, 2, fib_tp_str, c_main, bg_b)
+
+    tbl_cell(info_table, 3, 2, tp1_pct_dash, c_good, bg_b)
+
+    tbl_cell(info_table, 4, 2, "Target → Phase 3", c_muted, bg_b)
+
+    tbl_cell(info_table, 0, 3, "2nd Pivot", c_main, bg_a)
+
+    tbl_price(info_table, 1, 3, not na(p_2nd_dash) ? str.tostring(p_2nd_dash, fmt_dash) : "—", c_main, bg_a)
+
+    tbl_cell(info_table, 2, 3, "1.0", c_main, bg_a)
+
+    tbl_cell(info_table, 3, 3, "—", c_muted, bg_a)
+
+    tbl_cell(info_table, 4, 3, "Confirmation → Phase 2", c_muted, bg_a)
+
+    tbl_cell(info_table, 0, 4, "1st Pivot", c_pivot, bg_b)
+
+    tbl_price(info_table, 1, 4, not na(p_1st_dash) ? str.tostring(p_1st_dash, fmt_dash) : "—", c_pivot, bg_b)
+
+    tbl_cell(info_table, 2, 4, fib_first_str, c_pivot, bg_b)
+
+    tbl_cell(info_table, 3, 4, "—", c_muted, bg_b)
+
+    tbl_cell(info_table, 4, 4, "First trigger / entry", c_muted, bg_b)
+
+    tbl_cell(info_table, 0, 5, "Stop", c_bad, bg_a)
+
+    tbl_price(info_table, 1, 5, not na(p_stop_dash) ? str.tostring(p_stop_dash, fmt_dash) : "—", c_bad, bg_a)
+
+    tbl_cell(info_table, 2, 5, "—", c_bad, bg_a)
+
+    tbl_cell(info_table, 3, 5, "—", c_muted, bg_a)
+
+    tbl_cell(info_table, 4, 5, phase_dash, c_muted, bg_a)
+
+    tbl_cell(info_table, 0, 6, "HL", c_good, bg_b)
+
+    tbl_price(info_table, 1, 6, not na(p_hl_dash) ? str.tostring(p_hl_dash, fmt_dash) : "—", c_good, bg_b)
+
+    tbl_cell(info_table, 2, 6, "0.0", c_good, bg_b)
+
+    tbl_cell(info_table, 3, 6, "—", c_muted, bg_b)
+
+    tbl_cell(info_table, 4, 6, "Current structure anchor", c_muted, bg_b)
+
+    tbl_cell(info_table, 0, 7, "LL", c_muted, bg_a)
+
+    tbl_price(info_table, 1, 7, not na(p_ll_dash) ? str.tostring(p_ll_dash, fmt_dash) : "—", c_muted, bg_a)
+
+    tbl_cell(info_table, 2, 7, "—", c_muted, bg_a)
+
+    tbl_cell(info_table, 3, 7, "—", c_muted, bg_a)
+
+    tbl_cell(info_table, 4, 7, "Prior low / structural fail", c_muted, bg_a)
+
+    tbl_header(info_table, 0, 8, "SCREEN")
+
+    tbl_header(info_table, 1, 8, "STATE")
+
+    tbl_header(info_table, 2, 8, "")
+
+    tbl_header(info_table, 3, 8, "")
+
+    tbl_header(info_table, 4, 8, "EVIDENCE")
+
+    tbl_cell(info_table, 0, 9, "RS Rating", c_main, bg_b)
+
+    tbl_cell(info_table, 1, 9, rs_dash, pass_rs_rating ? c_good : c_bad, bg_b)
+
+    tbl_cell(info_table, 2, 9, "", c_main, bg_b)
+
+    tbl_cell(info_table, 3, 9, "", c_main, bg_b)
+
+    tbl_cell(info_table, 4, 9, use_rs_rating ? "Minimum " + str.tostring(rsFilterLevel) : "Filter disabled", c_muted, bg_b)
+
+    tbl_cell(info_table, 0, 10, "Volatility", c_main, bg_a)
+
+    tbl_cell(info_table, 1, 10, adratr_dash, pass_adr and pass_atr ? c_good : c_bad, bg_a)
+
+    tbl_cell(info_table, 2, 10, "", c_main, bg_a)
+
+    tbl_cell(info_table, 3, 10, "", c_main, bg_a)
+
+    tbl_cell(info_table, 4, 10, "ADR / ATR qualification", c_muted, bg_a)
+
+    tbl_cell(info_table, 0, 11, "Sales YoY", c_main, bg_b)
+
+    tbl_cell(info_table, 1, 11, sales_dash, pass_sales ? c_good : c_bad, bg_b)
+
+    tbl_cell(info_table, 2, 11, "", c_main, bg_b)
+
+    tbl_cell(info_table, 3, 11, "", c_main, bg_b)
+
+    tbl_cell(info_table, 4, 11, "TTM revenue growth", c_muted, bg_b)
+
+    tbl_cell(info_table, 0, 12, "Trend / Sqz", c_main, bg_a)
+
+    tbl_cell(info_table, 1, 12, trend_dash, pass_sma and pass_squeeze ? c_good : c_bad, bg_a)
+
+    tbl_cell(info_table, 2, 12, "", c_main, bg_a)
+
+    tbl_cell(info_table, 3, 12, "", c_main, bg_a)
+
+    tbl_cell(info_table, 4, 12, "SMA50 + EMA squeeze gate", c_muted, bg_a)
+
+    tbl_cell(info_table, 0, 13, "Filter Gate", pass_all_filters ? c_good : c_bad, pass_all_filters ? bg_good : bg_bad)
+
+    tbl_cell(info_table, 1, 13, gate_dash, pass_all_filters ? c_good : c_bad, pass_all_filters ? bg_good : bg_bad)
+
+    tbl_cell(info_table, 2, 13, "", c_main, pass_all_filters ? bg_good : bg_bad)
+
+    tbl_cell(info_table, 3, 13, "", c_main, pass_all_filters ? bg_good : bg_bad)
+
+    tbl_cell(info_table, 4, 13, pass_all_filters ? "Enabled filters permit signals" : "At least one enabled filter blocks", c_muted, pass_all_filters ? bg_good : bg_bad)
+
+    tbl_cell(info_table, 0, 14, "Signal Now", c_main, bg_b)
+
+    tbl_cell(info_table, 1, 14, screen_signal_now, screen_signal_now == "NONE" ? c_muted : c_warn, bg_b)
+
+    tbl_cell(info_table, 2, 14, "", c_main, bg_b)
+
+    tbl_cell(info_table, 3, 14, "", c_main, bg_b)
+
+    tbl_cell(info_table, 4, 14, "Close-confirmed screener event", c_muted, bg_b)
+
+    tbl_header(info_table, 0, 15, "HABER CP")
+    tbl_header(info_table, 1, 15, "STATE")
+    tbl_header(info_table, 2, 15, "LEVEL")
+    tbl_header(info_table, 3, 15, "SCORE")
+    tbl_header(info_table, 4, 15, "EVIDENCE")
+
+    cp_hist_text = cp_subordinate ? color.new(c_muted, 35) : c_main
+    cp_hist_muted = cp_subordinate ? color.new(c_muted, 45) : c_muted
+    cp_hist_bg_b = cp_subordinate ? color.new(color.gray, 93) : bg_b
+    cp_hist_bg_a = cp_subordinate ? color.new(color.gray, 95) : bg_a
+    cp_state_col = cp_subordinate ? cp_hist_muted : haber_state >= 3 ? c_good : haber_state >= 1 ? c_warn : c_muted
+    cp_trend_col = cp_subordinate ? cp_hist_muted : haber_trend_cleared ? c_good : c_bad
+    cp_conf_col = cp_subordinate ? cp_hist_muted : haber_confluence ? c_good : c_muted
+    cp_pad_col = cp_subordinate ? cp_hist_muted : haber_launchpad ? c_good : c_warn
+    cp_tight_col = cp_subordinate ? cp_hist_muted : haber_tight_dry ? c_good : c_muted
+    cp_rvol_col = cp_subordinate ? cp_hist_muted : haber_vol_pickup ? c_good : c_muted
+    cp_break_col = cp_subordinate ? cp_hist_muted : haber_vol_pickup ? c_good : c_warn
+
+    tbl_cell(info_table, 0, 16, "CP / 2nd", cp_hist_text, cp_hist_bg_b)
+    tbl_cell(info_table, 1, 16, cp_authority_text, cp_state_col, cp_hist_bg_b)
+    tbl_price(info_table, 2, 16, not na(haber_cp) ? str.tostring(haber_cp, fmt_dash) : "—", cp_hist_text, cp_hist_bg_b)
+    tbl_cell(info_table, 3, 16, str.tostring(haber_score) + "/12", cp_hist_text, cp_hist_bg_b)
+    tbl_cell(info_table, 4, 16, haber_lower_half ? "Lower-half supply shelf" : "Pivot high in upper base", cp_hist_muted, cp_hist_bg_b)
+
+    tbl_cell(info_table, 0, 17, "Trendline", cp_hist_text, cp_hist_bg_a)
+    tbl_cell(info_table, 1, 17, haber_trend_cleared ? "CLEARED" : "BLOCKED", cp_trend_col, cp_hist_bg_a)
+    tbl_cell(info_table, 2, 17, not na(haber_trend_value) ? str.tostring(haber_trend_value, fmt_dash) : "—", cp_hist_text, cp_hist_bg_a)
+    tbl_cell(info_table, 3, 17, haber_confluence ? "CONFLUENCE" : "—", cp_conf_col, cp_hist_bg_a)
+    tbl_cell(info_table, 4, 17, haber_trend_valid ? "Declining-tops governor" : "No active declining-top line", cp_hist_muted, cp_hist_bg_a)
+
+    tbl_cell(info_table, 0, 18, "Launchpad", cp_hist_text, cp_hist_bg_b)
+    tbl_cell(info_table, 1, 18, haber_launchpad ? "READY" : "NOT READY", cp_pad_col, cp_hist_bg_b)
+    tbl_cell(info_table, 2, 18, not na(haber_ma_spread) ? str.tostring(haber_ma_spread, "#.##") + "%" : "—", cp_hist_text, cp_hist_bg_b)
+    tbl_cell(info_table, 3, 18, haber_tight_dry ? "TIGHT + DRY" : "—", cp_tight_col, cp_hist_bg_b)
+    tbl_cell(info_table, 4, 18, "10/21/23 MA bunch under price", cp_hist_muted, cp_hist_bg_b)
+
+    tbl_cell(info_table, 0, 19, "Break Vol", cp_hist_text, cp_hist_bg_a)
+    tbl_cell(info_table, 1, 19, "RVOL " + str.tostring(haber_rvol, "#.##") + "x", cp_rvol_col, cp_hist_bg_a)
+    tbl_cell(info_table, 2, 19, haber_vol_pickup ? "EXPANDING" : "NOT CONFIRMED", cp_break_col, cp_hist_bg_a)
+    tbl_cell(info_table, 3, 19, haber_recent_break ? "AGE " + str.tostring(haber_break_age) : "—", cp_hist_text, cp_hist_bg_a)
+    tbl_cell(info_table, 4, 19, "Volume confirmation at the structural shelf", cp_hist_muted, cp_hist_bg_a)
+
+    tbl_cell(info_table, 0, 20, "CP Read", cp_hist_text, cp_hist_bg_b)
+    cp_read_dash = cp_subordinate ? "CP is historical context now. ASP owns ENTRY → POSITION → TARGET → EXIT authority until the lifecycle ends." : not haber_has_asp_setup ? "No ASP HL setup, so there is no authoritative Consolidation Pivot." : not haber_lower_half ? "ASP structure exists, but the 2nd Pivot is high in the base rather than a lower-half early supply shelf." : not haber_trend_ok ? "ASP 2nd Pivot is valid, but price is still below the declining-tops governor. Early, not actionable." : not haber_launchpad and haber_require_pad ? "ASP 2nd Pivot is valid and trendline permission is present, but Launchpad support is not ready." : haber_sweet_spot ? "Best alignment: ASP 2nd Pivot = Haber CP, Launchpad + tight/dry + volume + trendline confluence all confirm." : haber_high_quality ? "High-quality structural CP break: ASP authority, Launchpad, contraction and breakout volume agree." : haber_actionable ? "ASP 2nd Pivot / Haber CP has broken with structural permission. Volume/tightness confirmation is incomplete." : haber_approach ? "Price is approaching the ASP 2nd Pivot / Haber CP. Watch for a decisive break with volume." : "ASP setup is active. The 2nd Pivot is the governing Haber supply shelf."
+    table.cell(info_table, 1, 20, cp_read_dash, text_color=cp_hist_text, text_size=table_txt_size, bgcolor=cp_hist_bg_b, text_halign=text.align_left)
+    table.merge_cells(info_table, 1, 20, 4, 20)
+
+    tbl_cell(info_table, 0, 21, "READ", c_main, bg_a)
+    table.cell(info_table, 1, 21, read_dash, text_color=c_main, text_size=table_txt_size, bgcolor=bg_a, text_halign=text.align_left)
+    table.merge_cells(info_table, 1, 21, 4, 21)
+
+    decision_col = unified_action == "PROTECT / EXIT" ? c_bad : asp_entry_live ? c_good : haber_cp_ready ? c_warn : c_muted
+    decision_bg = unified_action == "PROTECT / EXIT" ? bg_bad : asp_entry_live ? bg_good : haber_cp_ready ? color.new(color.orange, 86) : bg_b
+    table.cell(info_table, 0, 22, "DECISION · " + unified_action + " · AUTHORITY " + unified_authority, text_color=decision_col, bgcolor=decision_bg, text_size=size.normal, text_halign=text.align_center)
+    table.merge_cells(info_table, 0, 22, 4, 22)
+    table.cell(info_table, 0, 23, "NEXT · " + unified_next, text_color=c_main, bgcolor=bg_a, text_size=table_txt_size, text_halign=text.align_left)
+    table.merge_cells(info_table, 0, 23, 4, 23)
+
+// Dedicated numeric Pine Screener outputs
+
+plot(rt_1st_break ? 1 : 0, title="SCAN 1st Pivot Break", display=display.none)
+
+plot(rt_2nd_break ? 1 : 0, title="SCAN 2nd Pivot Break", display=display.none)
+
+plot(rt_tp1_hit ? 1 : 0, title="SCAN TP1 Hit", display=display.none)
+
+plot(rt_tp2_hit ? 1 : 0, title="SCAN TP2 Hit", display=display.none)
+
+plot(rt_stop_hit ? 1 : 0, title="SCAN Stop Hit", display=display.none)
+
+plot(rt_ll_break ? 1 : 0, title="SCAN LL Break", display=display.none)
+
+plot(rt_cnt_break ? 1 : 0, title="SCAN Counter Trend Break", display=display.none)
+
+plot(percent_breakout ? 1 : 0, title="SCAN Stockbee 4pct Burst", display=display.none)
+
+plot(pass_all_filters ? 1 : 0, title="SCAN Filter Gate", display=display.none)
+unified_action_code = unified_action == "PROTECT / EXIT" ? 5 : unified_action == "MANAGE RUNNER" ? 4 : unified_action == "HOLD / MANAGE" ? 3 : unified_action == "ENTRY LIVE" ? 2 : haber_cp_ready ? 1 : 0
+plot(unified_action_code, title="SCAN Unified Action", display=display.none)
+plot(asp_entry_live ? 1 : 0, title="SCAN ASP Lifecycle Authority", display=display.none)
+plot(cp_subordinate ? 1 : 0, title="SCAN CP Subordinate", display=display.none)
