@@ -1,0 +1,214 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © TheRealDrip2Rip
+// Modified: signal grade filter, HTF MA filter, closed-candle (no repaint) option,
+// TP/SL levels, trailing stop from TP1, win-rate / TP3-continuation stats and PnL simulation.
+
+//@version=6
+indicator("SuperTrend", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ═══════════════════════════════════════════════════════════════
+//   INPUTS
+// ═══════════════════════════════════════════════════════════════
+
+g1 = "Engine"
+i_len     = input.int  (14,  "ATR Length",         minval=1,           group=g1)
+i_factor  = input.float(3.5, "Base Factor",        step=0.1, minval=1, group=g1,tooltip="Base multiplier. Automatically scaled by the live Volatility Regime.")
+i_er_len  = input.int  (10,  "ER Length",          minval=3, maxval=20, group=g1,tooltip="Kaufman Efficiency Ratio lookback. Measures how efficiently price is trending vs chopping.")
+i_confirm = input.int  (2,   "Confirm Bars (base)", minval=1, maxval=5, group=g1,tooltip="Base confirmation bars. Automatically raised when ER is low (choppy), lowered when ER is high (trending).")
+
+g_gr = "Signal Grade Filter"
+i_gA = input.bool(true, "Allow Grade A", group=g_gr)
+i_gB = input.bool(true, "Allow Grade B", group=g_gr)
+i_gC = input.bool(true, "Allow Grade C", group=g_gr)
+
+g_htf = "HTF MA Filter"
+i_htf_on   = input.bool(false, "Enable HTF MA Filter", group=g_htf, tooltip="When on, LONG signals require price above the higher-timeframe MA and SHORT signals require price below it.")
+i_htf_tf   = input.timeframe("D", "HTF Timeframe", group=g_htf)
+i_ma_type  = input.string("EMA", "MA Type", options=["EMA","SMA","WMA","RMA"], group=g_htf)
+i_ma_len   = input.int(21, "MA Length", minval=1, group=g_htf)
+i_htf_show = input.bool(true, "Show HTF MA on Chart", group=g_htf)
+i_ma_bull  = input.color(#4caf50, "Bullish MA Color", group=g_htf)
+i_ma_bear  = input.color(#f44336, "Bearish MA Color", group=g_htf)
+
+g_cl = "Repaint Control"
+i_closed = input.bool(true, "Use Closed Candle Only (No Repaint)", group=g_cl, tooltip="Recommended. When on, signals and trade logic are evaluated only on a confirmed bar close, and the HTF MA uses the last fully closed HTF candle. When off, the forming candle is used and signals / the HTF MA can repaint.")
+
+g_wt = "WaveTrend"
+i_wt_on   = input.bool(true, "Show WaveTrend Cross Dots", group=g_wt, tooltip="Dot = WT1 crossed WT2. Diamond = the cross happened inside the oversold (long) or overbought (short) zone, which is the stronger version.")
+i_wt_n1   = input.int(10, "Channel Length", minval=1, group=g_wt)
+i_wt_n2   = input.int(21, "Average Length", minval=1, group=g_wt)
+i_wt_ma   = input.int(4,  "Signal MA Length", minval=1, group=g_wt)
+i_wt_ob   = input.float(60.0,  "Overbought Level", group=g_wt)
+i_wt_os   = input.float(-60.0, "Oversold Level",   group=g_wt)
+i_wt_bull = input.color(#00e676, "WT Bull Colour", group=g_wt)
+i_wt_bear = input.color(#ff1744, "WT Bear Colour", group=g_wt)
+
+g_rb = "MA Ribbon (Guppy RWB / BWR)"
+i_rib_on   = input.bool(true, "Show MA Ribbon", group=g_rb, tooltip="12 EMAs: the fastest is red, the slowest is blue, with white in the middle. In an uptrend the stack reads Red-White-Blue from top to bottom (RWB). In a downtrend it flips to Blue-White-Red (BWR).")
+i_r1  = input.int(3,  "EMA 1 (fastest)", minval=1, group=g_rb)
+i_r2  = input.int(5,  "EMA 2",  minval=1, group=g_rb)
+i_r3  = input.int(8,  "EMA 3",  minval=1, group=g_rb)
+i_r4  = input.int(10, "EMA 4",  minval=1, group=g_rb)
+i_r5  = input.int(12, "EMA 5",  minval=1, group=g_rb)
+i_r6  = input.int(15, "EMA 6",  minval=1, group=g_rb)
+i_r7  = input.int(30, "EMA 7",  minval=1, group=g_rb)
+i_r8  = input.int(35, "EMA 8",  minval=1, group=g_rb)
+i_r9  = input.int(40, "EMA 9",  minval=1, group=g_rb)
+i_r10 = input.int(45, "EMA 10", minval=1, group=g_rb)
+i_r11 = input.int(50, "EMA 11", minval=1, group=g_rb)
+i_r12 = input.int(60, "EMA 12 (slowest)", minval=1, group=g_rb)
+i_rib_red  = input.color(#ef5350, "Fast End Colour (Red)",  group=g_rb)
+i_rib_blue = input.color(#42a5f5, "Slow End Colour (Blue)", group=g_rb)
+i_rib_tr   = input.int(30, "Ribbon Transparency", minval=0, maxval=95, group=g_rb)
+i_rib_w    = input.int(1,  "Ribbon Line Width",   minval=1, maxval=4,  group=g_rb)
+
+g_tp = "TP / SL Levels"
+i_tp_show  = input.bool (true, "Show TP/SL Levels", group=g_tp)
+i_sl       = input.float(1.5, "Stop Loss (ATR)",     step=0.1, minval=0.1, group=g_tp)
+i_tp1      = input.float(1.0, "Take Profit 1 (ATR)", step=0.1, minval=0.1, group=g_tp)
+i_tp2      = input.float(2.0, "Take Profit 2 (ATR)", step=0.1, minval=0.1, group=g_tp)
+i_tp3      = input.float(3.0, "Take Profit 3 (ATR)", step=0.1, minval=0.1, group=g_tp, tooltip="The simulated trade is fully closed at TP3.")
+i_trail_on = input.bool (true, "Trailing Stop After TP1", group=g_tp, tooltip="Once TP1 is hit the stop moves to breakeven and then trails the best price since entry by the distance below. It only ever moves in the trade's favour.")
+i_trail    = input.float(1.0, "Trail Distance (ATR)", step=0.1, minval=0.1, group=g_tp)
+i_off      = input.int  (15,  "Label Offset (bars right)", minval=1, maxval=100, group=g_tp)
+
+g_pnl = "PnL Simulation"
+i_acct     = input.float(1000, "Account Size ($)",    minval=1,   group=g_pnl)
+i_risk     = input.float(1.0,  "Risk per Trade (%)",  minval=0.1, step=0.1, group=g_pnl)
+i_compound = input.bool(false, "Compound Equity",     group=g_pnl, tooltip="Off: every trade risks a fixed % of the starting account size. On: risk is a % of current simulated equity.")
+
+g2 = "Visuals"
+i_glow    = input.bool(true,  "Glow",          group=g2)
+i_shade   = input.bool(true,  "Shading",       group=g2)
+i_candles = input.bool(true,  "Colour Candles",group=g2)
+i_labels  = input.bool(true,  "Flip Labels",   group=g2)
+i_hist    = input.bool(true,  "Show Historical Signals & Trades", group=g2, tooltip="Off: only the most recent signal label and the most recent trade (levels, trailing stop, exit label) stay on the chart. Older ones are removed when a new trade opens. WaveTrend dots and the SuperTrend line itself are not affected.")
+i_exitlbl = input.bool(true,  "Show Exit Labels", group=g2, tooltip="Marks where each simulated trade ended and why (STOP, TRAIL, TP3 or FLIP), with the result in R.")
+i_table   = input.bool(true,  "Dashboard",     group=g2)
+
+g3 = "Palette"
+i_bull = input.color(#26a69a, "Bull", group=g3)
+i_bear = input.color(#ef5350, "Bear", group=g3)
+
+g4 = "Dashboard"
+i_pos      = input.string("Top Right", "Table Position", options=["Top Left","Top Center","Top Right","Middle Left","Middle Center","Middle Right","Bottom Left","Bottom Center","Bottom Right"], group=g4)
+i_tbl_size = input.string("Small", "Table Text Size", options=["Tiny","Small","Normal","Large"], group=g4)
+i_tbl_ext  = input.bool(true, "Extended Rows (Regime, Confidence, HTF Trend, ADX, DI, TP2/TP3 reach)", group=g4)
+i_adx_len  = input.int(14, "ADX / DI Length", minval=1, group=g4)
+
+g_lb = "Label Sizes"
+i_lbl_size = input.string("Small", "Signal Label Text Size", options=["Tiny","Small","Normal","Large"], group=g_lb)
+i_lvl_size = input.string("Tiny",  "TP/SL Label Text Size", options=["Tiny","Small","Normal","Large"], group=g_lb)
+
+g_th = "Theme"
+i_theme = input.string("Dark", "Theme", options=["Dark","Light"], group=g_th, tooltip="Set to match your chart background. Affects the dashboard and the entry line colour.")
+
+// ── Helpers: text size + theme colours ───────────────────────
+f_size(string sz) =>
+    sz == "Tiny" ? size.tiny : sz == "Small" ? size.small : sz == "Normal" ? size.normal : size.large
+
+sz_tbl = f_size(i_tbl_size)
+sz_lbl = f_size(i_lbl_size)
+sz_lvl = f_size(i_lvl_size)
+
+is_dark = i_theme == "Dark"
+c_ink   = is_dark ? color.white : color.black
+c_bg    = is_dark ? color.new(#080808, 5) : color.new(#f4f6f8, 3)
+c_hdr   = is_dark ? color.white  : #101418
+c_txt   = is_dark ? color.silver : #37474f
+c_dim   = is_dark ? color.gray   : #607d8b
+c_warn  = is_dark ? color.orange : #e65100
+c_cool  = is_dark ? color.aqua   : #00838f
+
+// ═══════════════════════════════════════════════════════════════
+//   ADAPTIVE LAYER
+// ═══════════════════════════════════════════════════════════════
+
+atr = ta.atr(i_len)
+
+// ── 1. KAUFMAN EFFICIENCY RATIO ──────────────────────────────
+// Net price displacement divided by total path traveled.
+// A perfectly trending market scores 1.0.
+// A market going nowhere despite lots of movement scores near 0.0.
+
+net_move   = math.abs(close - close[i_er_len])
+var float total_path = 0.0
+total_path := 0.0
+for i = 0 to i_er_len - 1
+    total_path += math.abs(close[i] - close[i + 1])
+er        = total_path > 0 ? net_move / total_path : 0.0
+er_smooth = ta.ema(er, 3)
+
+// ── 2. VOLATILITY REGIME ─────────────────────────────────────
+// Current ATR expressed as a ratio to its 50-bar baseline.
+// > 1.2 : elevated, the factor widens
+// < 0.8 : compressed, the factor tightens
+// Clamped to 0.75 - 1.40 and used to scale the factor below.
+
+atr_baseline = ta.sma(atr, 50)
+vol_ratio    = atr_baseline > 0 ? atr / atr_baseline : 1.0
+vol_regime   = math.max(math.min(vol_ratio, 1.40), 0.75)
+
+// ── 3. ADAPTIVE FACTOR ───────────────────────────────────────
+// The SuperTrend multiplier is scaled by the volatility regime.
+// The band widens when volatility is elevated and tightens when
+// volatility is compressed.
+
+adaptive_factor = i_factor * vol_regime
+
+// ── 4. ER-DRIVEN ADAPTIVE CONFIRMATION ───────────────────────
+// Low ER (chop): require more bars before a flip is confirmed.
+// High ER (trend): require fewer.
+
+adaptive_confirm = er_smooth < 0.25 ? math.max(i_confirm + 2, 4) :
+                   er_smooth < 0.45 ? i_confirm + 1               :
+                   er_smooth < 0.65 ? i_confirm                   :
+                                      math.max(i_confirm - 1, 1)
+
+// ── 5. FLIP QUALITY SCORE (0–100) ────────────────────────────
+// Calculated at every flip. Three weighted components:
+//   50% — Efficiency (ER): is the market actually trending?
+//   30% — Volatility normality: is vol in a healthy range?
+//         (peaks at vol_ratio=1.0, falls off at extremes)
+//   20% — 5-bar momentum: is price actually moving at the flip?
+//
+// Higher scores mean the flip happened in cleaner conditions.
+// Grades: A = 70 and above, B = 50 to 69, C = below 50.
+
+price_mom_pct = math.abs(ta.roc(close, 5))
+atr_pct       = close > 0 ? atr / close * 100 : 0.0
+mom_norm      = atr_pct > 0 ? math.min(price_mom_pct / (atr_pct * 2), 1.0) : 0.0
+
+vol_score     = math.max(1.0 - math.abs(1.0 - vol_ratio), 0.0)
+quality_raw   = er_smooth * 0.50 + vol_score * 0.30 + mom_norm * 0.20
+quality_pct   = math.round(quality_raw * 100)
+
+quality_grade = quality_pct >= 70 ? "A" :quality_pct >= 50 ? "B" : "C"
+
+// ── 6. ADX / DI (dashboard only, does not affect signals) ────
+[di_plus, di_minus, adx_val] = ta.dmi(i_adx_len, i_adx_len)
+
+// ═══════════════════════════════════════════════════════════════
+//   MANUAL SUPERTREND WITH ADAPTIVE FACTOR
+//   ta.supertrend() only accepts a simple float, so we implement
+//   the identical algorithm manually to accept our series factor.
+// ═══════════════════════════════════════════════════════════════
+
+upper_basic = hl2 + adaptive_factor * atr
+lower_basic = hl2 - adaptive_factor * atr
+
+var float upper_band = na
+var float lower_band = na
+
+upper_band := na(upper_band[1]) ? upper_basic : (upper_basic < upper_band[1] or close[1] > upper_band[1] ? upper_basic : upper_band[1])
+lower_band := na(lower_band[1]) ? lower_basic : (lower_basic > lower_band[1] or close[1] < lower_band[1] ? lower_basic : lower_band[1])
+
+var int trend_dir = 1
+trend_dir := na(trend_dir[1]) ? 1 : trend_dir[1] ==  1 ? (close < lower_band ? -1 :  1) :(close > upper_band  ?  1 : -1)
+
+st   = trend_dir ==  1 ? lower_band : upper_band
+bull = trend_dir ==  1
+
+// ═══════════════════════════════════════════════════════════════
+//   CONFIRMATION FILTER
+// ═══════════════════════════════════════════════════════════════
