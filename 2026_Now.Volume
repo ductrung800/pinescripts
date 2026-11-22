@@ -1,0 +1,214 @@
+//@version=6
+indicator('2026_Now.Volume', overlay = true, scale = scale.none, max_labels_count = 500)
+
+// ── THEME & VOLUME INPUTS ─────────────────────────────────────────────────────
+grp_theme    = 'Theme & General Settings'
+theme        = input.string('Dark', title = 'Chart Theme', options = ['Dark', 'Light'], group = grp_theme)
+heightFactor = input.int(4, title = 'Height Compression Factor', minval = 1, maxval = 20, tooltip = 'Higher number = shorter bars.', group = grp_theme)
+maLength     = input.int(50, title = 'Volume MA Length', minval = 1, group = grp_theme)
+showLabels   = input.bool(true, title = 'Show Volume Surge Labels?', group = grp_theme)
+sizeLb       = input.string('Normal', 'Label Size', options = ['Tiny', 'Small', 'Normal', 'Large'], group = grp_theme)
+
+// ── MARKETSMITH TABLE INPUTS ──────────────────────────────────────────────────
+grp_ms       = 'MarketSmith Table & Buzz'
+showTa       = input.bool(true, title = 'Show MarketSmith Table', group = grp_ms)
+tablePosIn   = input.string('Top Right', title = 'Table Position', options = ['Top Right', 'Top Left', 'Top Center', 'Bottom Right', 'Bottom Left', 'Bottom Center', 'Middle Right', 'Middle Left', 'Middle Center'], group = grp_ms)
+sizeTa       = input.string('Small', 'Table Size', options = ['Tiny', 'Small', 'Normal', 'Large'], group = grp_ms)
+volTa        = input.bool(true, title = 'Show Current Volume on Table', group = grp_ms)
+buzzTa       = input.bool(true, title = 'Show Vol Buzz on Table', group = grp_ms)
+
+// ── SURGE & SCREENER INPUTS ───────────────────────────────────────────────────
+grp_thresh   = 'Surge & Screener Thresholds'
+spikeThresh  = input.float(1.35, title = 'Teal Spike Threshold (x MA)', step = 0.05, group = grp_thresh)
+dryThresh    = input.float(0.50, title = 'Blue Dry-Up Threshold (x MA)', step = 0.05, group = grp_thresh)
+lookback_obv = input.int(65, title = 'OBV Lookback Period', minval = 10, group = grp_thresh)
+buy_thresh   = input.float(1.0, title = 'OBV Buy Pressure Thresh', step = 0.1, group = grp_thresh)
+strong_buy   = input.float(1.5, title = 'OBV Strong Buy Thresh', step = 0.1, group = grp_thresh)
+v_strong_buy = input.float(2.0, title = 'OBV Very Strong Buy Thresh', step = 0.1, group = grp_thresh)
+ppDays       = input.int(5, title = 'Pocket Pivot Lookback Days', minval = 1, group = grp_thresh)
+ppBarSize    = input.float(3.0, title = 'Min % Up-Close Required for PP', step = 0.5, group = grp_thresh)
+
+// ── DYNAMIC THEME PALETTE ─────────────────────────────────────────────────────
+isDark       = theme == 'Dark'
+colMA        = isDark ? #ffffff : #111111
+colNormal    = isDark ? color.new(#363a45, 20) : color.new(#b0b3ba, 20)
+colTeal      = color.new(#00acc1, 10)
+colPurple    = color.new(#ab47bc, 10)
+colBlue      = color.new(#2962ff, 10)
+posTCol      = isDark ? color.lime : #008a00
+negTCol      = isDark ? color.red : #d32f2f
+
+tabBgCol     = isDark ? color.rgb(18, 20, 24, 20) : color.rgb(245, 246, 250, 10)
+tabBorderCol = isDark ? color.new(color.gray, 70) : color.new(color.gray, 40)
+txtTCol      = isDark ? color.white : color.rgb(20, 20, 20)
+
+// ── CORE CALCULATIONS ─────────────────────────────────────────────────────────
+volMA        = ta.sma(volume, maLength)
+advDol       = close * volMA  // Restored Average Dollar Volume calculation
+isUpDay      = close >= close[1]
+volBuzz      = 100 * (volume / volMA) - 100
+
+// 1. Up/Down Volume Ratio
+upVol        = close > close[1] ? volume : 0
+dnVol        = close < close[1] ? volume : 0
+sumUp        = math.sum(upVol, maLength)
+sumDn        = math.sum(dnVol, maLength)
+upDnVolRatio = sumDn != 0 ? sumUp / sumDn : 0
+
+// 2. Pocket Pivot (PP) Logic
+greenDay     = close > open and (((close - open) / close) * 100) > ppBarSize
+volchk       = array.new<float>(ppDays + 1)
+for i = 1 to ppDays
+    array.set(volchk, i, close[i] > open[i] ? 0.0 : volume[i])
+ppChk = 0
+for i = 1 to ppDays
+    if volume < array.get(volchk, i)
+        ppChk += 1
+isPP         = ppChk < 1 and greenDay
+cond_pp      = isPP
+
+// 3. Weekly VWAP (W-VWAP)
+weeklyVwap      = request.security(syminfo.tickerid, "W", ta.vwap, gaps=barmerge.gaps_off)
+aboveWeeklyVwap = close > weeklyVwap
+
+// 4. OBV New High & Signal
+obv          = ta.obv
+upVolOBV     = math.sum(close > close[1] ? volume : 0, lookback_obv)
+downVolOBV   = math.sum(close < close[1] ? volume : 0, lookback_obv)
+udRatioOBV   = downVolOBV > 0 ? upVolOBV / downVolOBV : upVolOBV > 0 ? 999.0 : 1.0
+obvNewHigh   = obv >= ta.highest(obv, lookback_obv)
+priceNewHigh = high >= ta.highest(high, lookback_obv)
+obvNHBP      = obvNewHigh and not priceNewHigh
+nh_count     = math.sum(obvNewHigh and priceNewHigh ? 1 : 0, lookback_obv)
+nhbp_count   = math.sum(obvNHBP ? 1 : 0, lookback_obv)
+obv_signal_txt = udRatioOBV >= v_strong_buy ? 'Very Strong Buy' : udRatioOBV >= strong_buy ? 'Strong Buy' : udRatioOBV >= buy_thresh ? 'Buy Pressure' : 'Sell Pressure'
+
+// 5. Volume Edge (HVE / HV1)
+var float hve = volume
+if volume > hve
+    hve := volume
+hvone        = ta.highest(volume, 252)
+isVolEdge    = volume == hve or volume == hvone
+hvStatus     = volume == hve ? "🔴 HVE" : volume == hvone ? "🟠 HV1" : "–"
+
+// 6. Volume Dry Up (VDU)
+lowVolume      = volume < volume[1]
+spread         = high - low
+avgSpread      = ta.sma(spread, 20)
+narrowRangeBar = spread < 0.9 * avgSpread
+aboveClose_vsa = close > spread * 0.5 + low
+upClose_vsa    = close >= spread * 0.7 + low
+volumedryup    = lowVolume and volume < volMA * 0.5
+noDemandBarUt  = narrowRangeBar and lowVolume and (aboveClose_vsa or upClose_vsa)
+vduWarning     = volumedryup or noDemandBarUt
+
+// ── COLOR & PLOTTING PRIORITY ─────────────────────────────────────────────────
+isTealSpike  = volume > volMA * spikeThresh
+isDryUp      = volume < volMA * dryThresh or volume <= ta.lowest(volume, 20)
+barColor     = isDryUp ? colBlue : isTealSpike ? colTeal : isPP ? colPurple : colNormal
+
+plot(volume * heightFactor, title = 'Invisible Ceiling', color = color.new(txtTCol, 100), editable = false)
+plot(volume, title = 'Volume', style = plot.style_columns, color = barColor)
+plot(volMA, title = 'Volume MA', color = colMA, linewidth = 1)
+
+// ── FORMATTING HELPERS ────────────────────────────────────────────────────────
+f_format_vol(v) =>
+    v >= 1000000000 ? str.tostring(v / 1000000000, '#.##') + 'B' : v >= 1000000 ? str.tostring(v / 1000000, '#.##') + 'M' : v >= 1000 ? str.tostring(v / 1000, '#.##') + 'K' : str.tostring(v, '#')
+f_format_curr(val) =>
+    val >= 1000000000 ? "$" + str.tostring(val / 1000000000, "#.##") + "B" : val >= 1000000 ? "$" + str.tostring(val / 1000000, "#.##") + "M" : val >= 1000 ? "$" + str.tostring(val / 1000, "#.##") + "K" : "$" + str.tostring(val, "#.##")
+// Pacing Estimations
+barDuration  = time_close - time
+elapsedTime  = timenow - time
+timeFraction = barstate.isrealtime and barDuration > 0 ? math.min(math.max(elapsedTime / barDuration, 0.05), 1.0) : 1.0
+estVol       = volume / timeFraction
+rvol         = volMA > 0 ? estVol / volMA : 0.0
+volDiff      = volMA > 0 ? ((estVol - volMA) / volMA) * 100 : 0.0
+
+// ── SURGE LABELS ──────────────────────────────────────────────────────────────
+shouldLabel = showLabels and (isTealSpike or isPP) and not isDryUp
+lbSize = switch sizeLb
+    'Normal' => size.normal
+    'Tiny'   => size.tiny
+    'Small'  => size.small
+    'Large'  => size.large
+if shouldLabel
+    lblText = f_format_vol(volume) + '\n' + (volBuzz >= 0 ? '+' : '') + str.tostring(math.round(volBuzz)) + '%'
+    label.new(x = bar_index, y = volume * 1.08, text = lblText, style = label.style_none, textcolor = volBuzz >= 0 ? posTCol : negTCol, size = lbSize)
+
+// ── MINIMALIST FLOATING DATA TABLE ────────────────────────────────────────────
+taSize = switch sizeTa
+    'Normal' => size.normal
+    'Tiny'   => size.tiny
+    'Small'  => size.small
+    'Large'  => size.large
+tablePos = switch tablePosIn
+    'Top Right'     => position.top_right
+    'Top Left'      => position.top_left
+    'Top Center'    => position.top_center
+    'Bottom Right'  => position.bottom_right
+    'Bottom Left'   => position.bottom_left
+    'Bottom Center' => position.bottom_center
+    'Middle Right'  => position.middle_right
+    'Middle Left'   => position.middle_left
+    'Middle Center' => position.middle_center
+    => position.top_right
+
+// 1. Set border_width = 0 and bgcolor to 100% transparent to remove the box
+var table t = table.new(tablePos, 2, 13, bgcolor = color.new(color.black, 100), border_width = 0)
+
+if barstate.islast and showTa
+    // Row 0: Pocket Pivot
+    table.cell(t, 0, 0, 'Pocket Pivot', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+    table.cell(t, 1, 0, isPP ? 'PP Signal' : '–', text_color = isPP ? color.aqua : color.new(txtTCol, 60), text_size = taSize, text_halign = text.align_right)
+
+    // Row 1: Weekly VWAP
+    table.cell(t, 0, 1, 'W-VWAP', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+    table.cell(t, 1, 1, str.tostring(math.round(weeklyVwap, 2)) + (aboveWeeklyVwap ? ' (+)' : ' (-)'), text_color = aboveWeeklyVwap ? posTCol : negTCol, text_size = taSize, text_halign = text.align_right)
+
+    // Row 2: OBV New High
+    table.cell(t, 0, 2, 'OBV NH', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+    table.cell(t, 1, 2, obvNewHigh and priceNewHigh ? 'New High' : obvNHBP ? 'NHBP' : '–', text_color = obvNewHigh ? posTCol : obvNHBP ? color.orange : color.new(txtTCol, 60), text_size = taSize, text_halign = text.align_right)
+
+    // Row 3: OBV Signal
+    table.cell(t, 0, 3, 'OBV Signal', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+    table.cell(t, 1, 3, obv_signal_txt, text_color = udRatioOBV >= buy_thresh ? posTCol : negTCol, text_size = taSize, text_halign = text.align_right)
+
+    // Row 4: Vol Edge (HVE / HV1)
+    table.cell(t, 0, 4, 'Vol Edge', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+    table.cell(t, 1, 4, isVolEdge ? hvStatus : '–', text_color = isVolEdge ? color.orange : color.new(txtTCol, 60), text_size = taSize, text_halign = text.align_right)
+
+    // Row 5: Volume Dry Up (VDU)
+    table.cell(t, 0, 5, 'VDU', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+    table.cell(t, 1, 5, volumedryup ? 'Dry Up' : noDemandBarUt ? 'No Demand' : '–', text_color = vduWarning ? color.orange : color.new(txtTCol, 60), text_size = taSize, text_halign = text.align_right)
+
+    // Row 6: Up/Down Volume Ratio
+    table.cell(t, 0, 6, 'U/D Vol (50)', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+    table.cell(t, 1, 6, str.tostring(upDnVolRatio, '0.00'), text_color = upDnVolRatio >= 1.0 ? posTCol : negTCol, text_size = taSize, text_halign = text.align_right)
+
+    // Row 7: Volume Buzz %
+    if buzzTa
+        table.cell(t, 0, 7, 'Buzz', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+        table.cell(t, 1, 7, (volBuzz >= 0 ? '+' : '') + str.tostring(math.round(volBuzz)) + '%', text_color = volBuzz >= 0 ? posTCol : negTCol, text_size = taSize, text_halign = text.align_right)
+
+    // Row 8: RVOL (Pacing)
+    table.cell(t, 0, 8, 'RVOL (Pacing)', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+    table.cell(t, 1, 8, str.tostring(rvol, '#.##') + 'x', text_color = txtTCol, text_size = taSize, text_halign = text.align_right)
+
+    // Row 9: Vol vs Avg (Est)
+    diffColor = volDiff >= 0 ? color.green : color.red
+    diffPrefix = volDiff >= 0 ? '+' : ''
+    table.cell(t, 0, 9, 'Vol vs Avg (Est)', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+    table.cell(t, 1, 9, diffPrefix + str.tostring(volDiff, '#.##') + '%', text_color = diffColor, text_size = taSize, text_halign = text.align_right)
+
+    // Row 10: Average Volume
+    table.cell(t, 0, 10, 'Avg Vol', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+    table.cell(t, 1, 10, f_format_vol(volMA), text_color = txtTCol, text_size = taSize, text_halign = text.align_right)
+
+    // Row 11: Average Dollar Volume
+    table.cell(t, 0, 11, 'Avg $ Vol', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+    table.cell(t, 1, 11, f_format_curr(advDol), text_color = txtTCol, text_size = taSize, text_halign = text.align_right)
+
+    // Row 12: Current Volume
+    if volTa
+        table.cell(t, 0, 12, 'Current Vol', text_color = color.new(txtTCol, 20), text_size = taSize, text_halign = text.align_right)
+        table.cell(t, 1, 12, f_format_vol(volume), text_color = txtTCol, text_size = taSize, text_halign = text.align_right)
