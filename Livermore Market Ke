@@ -1,0 +1,807 @@
+//@version=6
+// NOW Livermore Market Key v1.2.4 — independent, original implementation.
+// Conceptual reference: Jesse Livermore, How to Trade in Stocks (1940), Market Key.
+// NOT the source code of, or affiliated with, LevelUpTools / Livermore Trend Key Pro.
+// Chart-timeframe indicator; for screener use the Daily (1D) timeframe.
+// No signal on a forming bar. MA50/SMA10W gates are CONTEXT ONLY, never Master OS authority.
+indicator("NOW Livermore Market Key v1.2.4", "NOW Livermore Key", overlay=true, max_lines_count=120, max_labels_count=100)
+
+// ── Inputs ───────────────────────────────────────────────────────────────────
+gCore = "01 · Market Key"
+thresholdMode = input.string("ATR", "Movement threshold mode", options=["ATR", "Percent", "Fixed Points"], group=gCore)
+atrLength = input.int(14, "ATR length", minval=2, maxval=100, group=gCore)
+atrMultiple = input.float(2.0, "S = ATR multiple", minval=0.25, maxval=10.0, step=0.25, group=gCore)
+percentMove = input.float(6.0, "S = percent of price", minval=0.5, maxval=40.0, step=0.5, group=gCore)
+fixedPoints = input.float(6.0, "S = fixed points", minval=0.01, step=0.25, group=gCore)
+confirmFraction = input.float(0.50, "Pivotal break buffer / S", minval=0.0, maxval=1.5, step=0.1, group=gCore, tooltip="Half of the natural movement threshold approximates Livermore's historic 3-versus-6-point pivotal confirmation. Not an exact LevelUp parameter.")
+fallbackMultiple = input.float(2.0, "Pre-first-pivot reversal / S", minval=1.0, maxval=5.0, step=0.25, group=gCore)
+seedBars = input.int(50, "Initial warm-up bars", minval=20, maxval=300, group=gCore)
+
+gVisual = "02 · Chart visuals"
+showBackground = input.bool(true, "Shade trend / pause", group=gVisual)
+colorBars = input.bool(false, "Use Market Key bar colours", group=gVisual)
+showSignals = input.bool(true, "Show Up / Down / Pause / Resume", group=gVisual)
+showPivots = input.bool(true, "Show historical pivotal dashes", group=gVisual)
+showKeyLine = input.bool(true, "Show current key price line", group=gVisual)
+keyLineBars = input.int(35, "Current key line lookback", minval=5, maxval=200, group=gVisual)
+maxHistoricalLines = input.int(35, "Retained pivotal dashes", minval=5, maxval=90, group=gVisual)
+upColour = input.color(#20885C, "Up colour", group=gVisual)
+downColour = input.color(#BD3B40, "Down colour", group=gVisual)
+pauseColour = input.color(#D7B84A, "Pause colour", group=gVisual)
+
+gMA = "03 · Moving averages (reference only)"
+showMAs = input.bool(true, "Show chart moving averages", group=gMA)
+showLongMA = input.bool(false, "Show 200 SMA", group=gMA)
+
+// Explicit screener outputs are always calculated and do not change the method.
+gGovern = "04 · NOW context (non-authoritative)"
+showContext = input.bool(true, "Show context check in interpretation", group=gGovern)
+maxATRextension = input.float(4.0, "Max extension above chart SMA50 (ATR)", minval=0.5, maxval=10.0, step=0.5, group=gGovern)
+
+gTables = "05 · Tables"
+showBrief = input.bool(true, "Show plain-English readout", group=gTables)
+readoutMode = input.string("Unified Vertical", "Decision dashboard view", options=["Unified Vertical", "Executive", "Technical Detail", "Danger Detail", "All Tables"], group=gTables)
+readoutTheme = input.string("Dark", "Dashboard theme", options=["Dark", "Light"], group=gTables)
+briefPositionInput = input.string("Bottom Right", "Readout position", options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group=gTables)
+showLedger = input.bool(true, "Show six-column ledger", group=gTables)
+ledgerPositionInput = input.string("Bottom Left", "Ledger position", options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group=gTables)
+ledgerRows = input.int(12, "Ledger rows", minval=5, maxval=24, group=gTables)
+textSizeInput = input.string("Normal", "Tables text size", options=["Tiny", "Small", "Normal", "Large", "Huge"], group=gTables)
+
+
+// ═══ NOW v1.2 · Danger & Technical Intelligence — evidence only ═════════════
+// Not part of the historical Livermore six-column state-machine logic.
+// Inspiration: Trading Mindwheel Danger Signals (Amphibiantrading, MPL 2.0)
+// and NOW Technical Cross-Check v11.3.0ca (four-pillar formula, same weights).
+// Thresholds are experimental and user adjustable; never create entries/exits.
+nx_group = "12 · NOW Danger / Technical Intelligence"
+nx_enabled = input.bool(true, "Enable danger interpretation", group=nx_group)
+nx_shockATRx = input.float(1.5, "Bear body >= ATR multiple", minval=0.5, maxval=5.0, step=0.25, group=nx_group)
+nx_closeLowPct = input.float(25.0, "Weak close: lowest % of bar", minval=5.0, maxval=50.0, step=5.0, group=nx_group)
+nx_heavyVolX = input.float(1.5, "Heavy volume multiple of 20-bar mean", minval=1.0, maxval=4.0, step=0.25, group=nx_group)
+nx_pivotLen = input.int(3, "Confirmed swing pivot left/right", minval=3, maxval=15, group=nx_group)
+nx_rsSymbol = input.symbol("AMEX:SPY", "RS benchmark (ignore same-ticker RS)", group=nx_group)
+nx_showDangerMarker = input.bool(true, "One marker on fresh DANGER / CRITICAL", group=nx_group)
+nx_showPillars = input.bool(true, "Show exact Cross-Check four-pillar scores", group=nx_group)
+nx_postShockEnabled = input.bool(true, "Keep post-shock warning after confirmed bear shock", group=nx_group)
+nx_postShockBars = input.int(5, "Post-shock watch bars (chart timeframe)", minval=1, maxval=30, group=nx_group)
+
+
+// v1.2 diagnostics — independent evidence, NOT new Livermore entry/exit states.
+nx_showDiagnostics = input.bool(false, "Show compact active danger breakdown", group=nx_group)
+nx_diagPosition = input.string("Top Right", "Danger breakdown position", options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"], group=nx_group)
+nx_diagADXLength = input.int(13, "ADX DI length", minval=2, maxval=50, group=nx_group)
+nx_diagADXSmooth = input.int(8, "ADX smoothing", minval=2, maxval=50, group=nx_group)
+nx_diagDLB = input.bool(true, "Read confirmed Weekly Miner DLB cycle", group=nx_group)
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+f_position(string s) =>
+    switch s
+        "Top Left" => position.top_left
+        "Top Center" => position.top_center
+        "Top Right" => position.top_right
+        "Middle Left" => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right" => position.middle_right
+        "Bottom Left" => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        => position.bottom_right
+
+f_text_size(string s) =>
+    switch s
+        "Tiny" => size.tiny
+        "Small" => size.small
+        "Large" => size.large
+        "Huge" => size.huge
+        => size.normal
+
+f_money(float v) =>
+    na(v) ? "—" : str.tostring(v, format.mintick)
+
+// Six original columns (left-to-right): Sec Rally, Nat Rally, Uptrend,
+// Downtrend, Nat Reaction, Sec Reaction.
+// Column assignment during recoveries is an interpretation, NOT a verbatim
+// transcription of every case in Livermore's handwritten Market Key.
+const int COL_SR = 0
+const int COL_NR = 1
+const int COL_UP = 2
+const int COL_DN = 3
+const int COL_NREACT = 4
+const int COL_SREACT = 5
+
+// ── Volatility and moving averages ───────────────────────────────────────────
+float atr = ta.atr(atrLength)
+float ema10 = ta.ema(close, 10)
+float ema21 = ta.ema(close, 21)
+float sma50 = ta.sma(close, 50)
+float sma200 = ta.sma(close, 200)
+// Previous COMPLETED weekly SMA10: deliberately use [1] with lookahead_on.
+// Using the current developing weekly average on a Daily chart would repaint.
+float confirmed10W = request.security(syminfo.tickerid, "W", ta.sma(close, 10)[1], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+float dynamicS = thresholdMode == "ATR" ? atr * atrMultiple : thresholdMode == "Percent" ? close * percentMove / 100.0 : fixedPoints
+dynamicS := math.max(nz(dynamicS, syminfo.mintick), syminfo.mintick)
+
+plot(showMAs ? ema10 : na, "10 EMA", color=#3BAEC2, linewidth=1)
+plot(showMAs ? ema21 : na, "21 EMA", color=#567C46, linewidth=2)
+plot(showMAs ? sma50 : na, "50 SMA", color=#BD4B47, linewidth=2)
+plot(showMAs and showLongMA ? sma200 : na, "200 SMA", color=#8847C8, linewidth=2)
+
+// ── State machine ────────────────────────────────────────────────────────────
+// regime persists through pauses; phasePaused identifies the counter-trend swing.
+// trendExtreme is the highest confirmed close in an active up-leg (lowest in down).
+// pauseExtreme is the counter-trend extreme while paused.
+// frozenS is locked when the leg/pause begins, avoiding ATR-driven level drift.
+var int regime = 0
+var bool phasePaused = false
+var int ledgerColumn = na
+var float trendExtreme = na
+var float pauseExtreme = na
+var float frozenS = na
+var float supportPivot = na
+var float resistancePivot = na
+var float priorNaturalRally = na
+var float priorNaturalReaction = na
+var float upStartPrice = na
+var int upStartTime = na
+
+// New-bar events reset every execution; events only become true on CLOSED bars.
+bool newUp = false
+bool newDown = false
+bool pauseUp = false
+bool pauseDown = false
+bool resumeUp = false
+bool resumeDown = false
+float newPivotPrice = na
+int newPivotKind = 0 // +1 pivotal resistance, -1 pivotal support
+bool closeConfirmed = barstate.isconfirmed
+int oldColumn = ledgerColumn
+
+if closeConfirmed and bar_index >= seedBars and not na(sma50)
+    if regime == 0
+        // SMA50 is used ONLY to initialize the ledger, never to override Market Key.
+        regime := close >= sma50 ? 1 : -1
+        phasePaused := false
+        ledgerColumn := regime == 1 ? COL_UP : COL_DN
+        trendExtreme := close
+        frozenS := dynamicS
+        if regime == 1
+            upStartPrice := close
+            upStartTime := time
+    else if regime == 1
+        // Test the previously established structural reversal level BEFORE any
+        // current-bar pivot updates: a falling bar cannot move its own stop.
+        float reversalDown = na(supportPivot) ? trendExtreme - fallbackMultiple * frozenS : supportPivot - confirmFraction * frozenS
+        if close <= reversalDown
+            newDown := true
+            regime := -1
+            phasePaused := false
+            ledgerColumn := COL_DN
+            trendExtreme := close
+            pauseExtreme := na
+            frozenS := dynamicS
+            supportPivot := na
+            resistancePivot := na
+            priorNaturalRally := na
+            priorNaturalReaction := na
+        else if phasePaused
+            pauseExtreme := math.min(pauseExtreme, close)
+            ledgerColumn := not na(priorNaturalReaction) and pauseExtreme >= priorNaturalReaction ? COL_SREACT : COL_NREACT
+            if close >= pauseExtreme + frozenS
+                resumeUp := true
+                phasePaused := false
+                supportPivot := pauseExtreme
+                priorNaturalReaction := pauseExtreme
+                newPivotPrice := pauseExtreme
+                newPivotKind := -1
+                trendExtreme := close
+                frozenS := dynamicS
+                if not na(resistancePivot) and close > resistancePivot
+                    ledgerColumn := COL_UP
+                else if na(priorNaturalRally) or close > priorNaturalRally
+                    ledgerColumn := COL_NR
+                else
+                    ledgerColumn := COL_SR
+                priorNaturalRally := math.max(nz(priorNaturalRally, close), close)
+        else
+            trendExtreme := math.max(trendExtreme, close)
+            if not na(resistancePivot) and close > resistancePivot
+                ledgerColumn := COL_UP
+            if close <= trendExtreme - frozenS
+                pauseUp := true
+                phasePaused := true
+                pauseExtreme := close
+                resistancePivot := trendExtreme
+                newPivotPrice := trendExtreme
+                newPivotKind := 1
+                ledgerColumn := not na(priorNaturalReaction) and close >= priorNaturalReaction ? COL_SREACT : COL_NREACT
+                frozenS := dynamicS
+    else
+        float reversalUp = na(resistancePivot) ? trendExtreme + fallbackMultiple * frozenS : resistancePivot + confirmFraction * frozenS
+        if close >= reversalUp
+            newUp := true
+            regime := 1
+            phasePaused := false
+            ledgerColumn := COL_UP
+            trendExtreme := close
+            pauseExtreme := na
+            frozenS := dynamicS
+            supportPivot := na
+            resistancePivot := na
+            priorNaturalRally := na
+            priorNaturalReaction := na
+            upStartPrice := close
+            upStartTime := time
+        else if phasePaused
+            pauseExtreme := math.max(pauseExtreme, close)
+            ledgerColumn := not na(priorNaturalRally) and pauseExtreme <= priorNaturalRally ? COL_SR : COL_NR
+            if close <= pauseExtreme - frozenS
+                resumeDown := true
+                phasePaused := false
+                resistancePivot := pauseExtreme
+                priorNaturalRally := pauseExtreme
+                newPivotPrice := pauseExtreme
+                newPivotKind := 1
+                trendExtreme := close
+                frozenS := dynamicS
+                if not na(supportPivot) and close < supportPivot
+                    ledgerColumn := COL_DN
+                else if na(priorNaturalReaction) or close < priorNaturalReaction
+                    ledgerColumn := COL_NREACT
+                else
+                    ledgerColumn := COL_SREACT
+                priorNaturalReaction := math.min(nz(priorNaturalReaction, close), close)
+        else
+            trendExtreme := math.min(trendExtreme, close)
+            if not na(supportPivot) and close < supportPivot
+                ledgerColumn := COL_DN
+            if close >= trendExtreme + frozenS
+                pauseDown := true
+                phasePaused := true
+                pauseExtreme := close
+                supportPivot := trendExtreme
+                newPivotPrice := trendExtreme
+                newPivotKind := -1
+                ledgerColumn := not na(priorNaturalRally) and close <= priorNaturalRally ? COL_SR : COL_NR
+                frozenS := dynamicS
+
+// ── Ledger: one entry per new meaningful confirmed close ─────────────────────
+// Same-column entries advance only on a fresh extreme; other bars are skipped.
+var array<int> ledgerDates = array.new_int()
+var array<int> ledgerCols = array.new_int()
+var array<float> ledgerPrices = array.new_float()
+var array<int> ledgerPivots = array.new_int()
+var float lastLedgerClose = na
+
+if closeConfirmed and regime != 0 and not na(ledgerColumn)
+    if newPivotKind != 0 and array.size(ledgerPivots) > 0
+        array.set(ledgerPivots, 0, newPivotKind)
+    bool risingColumn = ledgerColumn == COL_SR or ledgerColumn == COL_NR or ledgerColumn == COL_UP
+    bool changedColumn = na(oldColumn) or ledgerColumn != oldColumn
+    bool freshExtreme = risingColumn ? (na(lastLedgerClose) or close > lastLedgerClose) : (na(lastLedgerClose) or close < lastLedgerClose)
+    if changedColumn or freshExtreme
+        array.unshift(ledgerDates, time)
+        array.unshift(ledgerCols, ledgerColumn)
+        array.unshift(ledgerPrices, close)
+        array.unshift(ledgerPivots, 0)
+        lastLedgerClose := close
+        if array.size(ledgerDates) > 60
+            array.pop(ledgerDates)
+            array.pop(ledgerCols)
+            array.pop(ledgerPrices)
+            array.pop(ledgerPivots)
+
+// ── Key levels and NEXT decision threshold ──────────────────────────────────
+float trendEnd = regime == 1 ? (na(supportPivot) ? trendExtreme - fallbackMultiple * frozenS : supportPivot - confirmFraction * frozenS) : regime == -1 ? (na(resistancePivot) ? trendExtreme + fallbackMultiple * frozenS : resistancePivot + confirmFraction * frozenS) : na
+float resumeLevel = phasePaused ? (regime == 1 ? pauseExtreme + frozenS : pauseExtreme - frozenS) : na
+float keyLevel = phasePaused ? resumeLevel : trendEnd
+string keyMeaning = regime == 0 ? "WARM-UP" : phasePaused ? (regime == 1 ? "UP RESUMES" : "DOWN RESUMES") : (regime == 1 ? "UP TREND ENDS" : "DOWN TREND ENDS")
+float upTrendGain = regime == 1 and not na(upStartPrice) and upStartPrice != 0 ? (close / upStartPrice - 1.0) * 100.0 : na
+float extensionATR = not na(atr) and atr > 0 and not na(sma50) ? (close - sma50) / atr : na
+bool dailyContextOK = timeframe.isdaily and regime == 1 and not phasePaused and not na(confirmed10W) and close > sma50 and close > confirmed10W and not na(extensionATR) and extensionATR <= maxATRextension
+
+
+// ═══ SHARED NOW DANGER / FOUR-PILLAR ENGINE v1.2.0 ═════════════════════════
+// Source formulas: NOW Tech XCheck v11.3.0ca (scores are not reweighted).
+// Signal interpretation is new and independent from Livermore / IBD states.
+nx_clamp(float v) => math.max(0.0, math.min(100.0, v))
+
+nx_superichi_avg(float src, int length, float mult) =>
+    float atrv = ta.atr(length) * mult
+    float upb = hl2 + atrv
+    float dnb = hl2 - atrv
+    float upper = 0.0
+    float lower = 0.0
+    int os = 0
+    float max_v = 0.0
+    float min_v = 0.0
+    upper := src[1] < nz(upper[1], upb) ? math.min(upb, nz(upper[1], upb)) : upb
+    lower := src[1] > nz(lower[1], dnb) ? math.max(dnb, nz(lower[1], dnb)) : dnb
+    os := src > upper ? 1 : src < lower ? 0 : nz(os[1])
+    float spt = os == 1 ? lower : upper
+    max_v := ta.cross(src, spt) ? math.max(src, nz(max_v[1], src)) : os == 1 ? math.max(src, nz(max_v[1], src)) : spt
+    min_v := ta.cross(src, spt) ? math.min(src, nz(min_v[1], src)) : os == 0 ? math.min(src, nz(min_v[1], src)) : spt
+    math.avg(max_v, min_v)
+
+// Landry + SuperIchi + SQN (Trend Quality)
+nx_closeHigh50 = ta.highest(close, 50)
+nx_landry65 = ta.ema(close, 65)
+nx_landryScore = close >= nx_closeHigh50 * 0.95 ? 100.0 : close >= nx_closeHigh50 * 0.90 ? 65.0 : close >= nx_landry65 ? 45.0 : 20.0
+nx_sqnRet = close / nz(close[1], close) - 1.0
+nx_sqnDev = ta.stdev(nx_sqnRet, 100)
+nx_sqnSma = ta.sma(nx_sqnRet, 100)
+nx_sqnVal = nx_sqnSma * math.sqrt(100) / math.max(nx_sqnDev, 0.0001)
+nx_sqnScore = nx_clamp(50.0 + nx_sqnVal * 22.0)
+nx_tenkan = nx_superichi_avg(close, 9, 2.0)
+nx_kijun = nx_superichi_avg(close, 26, 4.0)
+nx_senkouA = math.avg(nx_kijun, nx_tenkan)
+nx_senkouB = nx_superichi_avg(close, 52, 6.0)
+nx_cloudTop = math.max(nx_senkouA[26], nx_senkouB[26])
+nx_cloudBot = math.min(nx_senkouA[26], nx_senkouB[26])
+nx_tkBull = nx_tenkan > nx_kijun
+nx_ichiScore = close > nx_cloudTop and nx_tkBull ? 100.0 : close > nx_cloudTop ? 75.0 : close >= nx_cloudBot ? 50.0 : close < nx_cloudBot and not nx_tkBull ? 10.0 : 30.0
+nx_trendScore = nx_clamp(nx_landryScore * 0.35 + nx_sqnScore * 0.40 + nx_ichiScore * 0.25)
+
+// Raschke 3/10 + 2-ROC + Williams %R (Momentum Timing)
+nx_r310 = ta.sma(close, 3) - ta.sma(close, 10)
+nx_r310Signal = ta.sma(nx_r310, 16)
+nx_r310Up = ta.crossover(nx_r310, nx_r310Signal)
+nx_r310Down = ta.crossunder(nx_r310, nx_r310Signal)
+nx_r310Score = nx_r310Up ? 100.0 : nx_r310Down ? 0.0 : nx_r310 > nx_r310Signal ? (nx_r310 > nx_r310[1] ? 82.0 : 68.0) : (nx_r310 > nx_r310[1] ? 42.0 : 18.0)
+nx_roc2 = close - close[2]
+nx_rocHigh = nx_roc2 > ta.highest(nx_roc2[1], 30) and close > high[1]
+nx_rocLow = nx_roc2 < ta.lowest(nx_roc2[1], 30) and close < low[1]
+nx_recentBull = math.sum(nx_rocHigh ? 1 : 0, 20) > 0
+nx_recentBear = math.sum(nx_rocLow ? 1 : 0, 20) > 0
+nx_rocScore = nx_rocHigh ? 100.0 : nx_rocLow ? 0.0 : nx_recentBull ? 78.0 : nx_recentBear ? 22.0 : nx_roc2 > nx_roc2[1] ? 62.0 : 38.0
+nx_wprHigh = ta.highest(high, 14)
+nx_wprLow = ta.lowest(low, 14)
+nx_wpr = 100.0 * (close - nx_wprHigh) / math.max(nx_wprHigh - nx_wprLow, 0.0001)
+nx_bearDiv = high >= ta.highest(high, 20)[1] and nx_wpr < -20 and ta.highest(nx_wpr, 20) >= -20
+nx_bullDiv = low <= ta.lowest(low, 20)[1] and nx_wpr > -80 and ta.lowest(nx_wpr, 20) <= -80
+nx_wprScore = nx_bullDiv ? 78.0 : nx_bearDiv ? 22.0 : nx_wpr >= -20 ? 82.0 : nx_wpr <= -80 ? 18.0 : nx_clamp(100.0 + nx_wpr)
+nx_momScore = nx_clamp(nx_r310Score * 0.50 + nx_rocScore * 0.30 + nx_wprScore * 0.20)
+
+// Elder Force Index (Participation)
+nx_efi = ta.ema(ta.change(close) * volume, 13)
+nx_efiBase = ta.ema(math.abs(ta.change(close) * volume), 13)
+nx_efiRatio = nx_efiBase > 0 ? nx_efi / nx_efiBase : 0.0
+nx_partScore = nx_clamp(50.0 + nx_efiRatio * 28.0)
+
+// BB fully contained in KC + direction of released momentum (Expansion)
+nx_basis = ta.sma(close, 20)
+nx_bbDev = 2.0 * ta.stdev(close, 20)
+nx_kcTr = ta.sma(ta.tr, 20)
+nx_highSqz = nx_basis - nx_bbDev >= nx_basis - nx_kcTr and nx_basis + nx_bbDev <= nx_basis + nx_kcTr
+nx_midSqz = not nx_highSqz and nx_basis - nx_bbDev >= nx_basis - nx_kcTr * 1.5 and nx_basis + nx_bbDev <= nx_basis + nx_kcTr * 1.5
+nx_lowSqz = not nx_highSqz and not nx_midSqz and nx_basis - nx_bbDev >= nx_basis - nx_kcTr * 2.0 and nx_basis + nx_bbDev <= nx_basis + nx_kcTr * 2.0
+nx_noSqz = not nx_highSqz and not nx_midSqz and not nx_lowSqz
+nx_sqzMom = ta.linreg(close - math.avg(math.avg(ta.highest(high, 20), ta.lowest(low, 20)), nx_basis), 20, 0)
+nx_sqzRelease = nx_noSqz and not nx_noSqz[1]
+nx_expScore = nx_highSqz ? 48.0 : nx_midSqz ? 42.0 : nx_lowSqz ? 50.0 : nx_sqzRelease ? (nx_sqzMom > 0 ? 92.0 : 18.0) : nx_sqzMom > 0 ? (nx_sqzMom > nx_sqzMom[1] ? 84.0 : 70.0) : (nx_sqzMom > nx_sqzMom[1] ? 42.0 : 20.0)
+// Exact Technical Cross-Check Four-Pillar total weights:
+nx_techHealth = nx_clamp(nx_trendScore * 0.35 + nx_momScore * 0.30 + nx_partScore * 0.15 + nx_expScore * 0.20)
+nx_setupReady = nx_clamp(nx_trendScore * 0.15 + nx_momScore * 0.35 + nx_partScore * 0.20 + nx_expScore * 0.30)
+if nx_trendScore < 35
+    nx_setupReady := math.min(nx_setupReady, 35.0)
+
+// Selective Trading Mindwheel danger evidence; independent families, not a 33-item sum.
+nx_range = high - low
+nx_closeLoc = nx_range > 0 ? 100.0 * (close - low) / nx_range : 50.0
+nx_weakClose = nx_closeLoc <= nx_closeLowPct
+nx_bearBodyATRx = atr > 0 ? math.max(open - close, 0.0) / atr : 0.0
+nx_shock = close < open and nx_bearBodyATRx >= nx_shockATRx and nx_weakClose
+nx_volMean = ta.sma(volume, 20)
+nx_heavyVol = not na(volume) and not na(nx_volMean) and nx_volMean > 0 and volume >= nx_volMean * nx_heavyVolX
+nx_sellClimax = nx_weakClose and nx_heavyVol and close < close[1]
+// Post-shock is confirmation-only memory, not a Livermore trend transition.
+// The initiating shock bar is counted as age 0; age 1..N are subsequent bars.
+var int nx_lastConfirmedShock = na
+var float nx_shockMidpoint = na
+if barstate.isconfirmed and nx_shock
+    nx_lastConfirmedShock := bar_index
+    nx_shockMidpoint := (open + close) * 0.5
+nx_shockAge = na(nx_lastConfirmedShock) ? na : bar_index - nx_lastConfirmedShock
+nx_shockRepair = not na(nx_shockMidpoint) and close > nx_shockMidpoint and close > ema21
+nx_postShock = nx_enabled and nx_postShockEnabled and not na(nx_shockAge) and nx_shockAge >= 1 and nx_shockAge <= nx_postShockBars and not nx_shockRepair
+nx_postShockStart = barstate.isconfirmed and nx_postShock and not nx_postShock[1]
+nx_outsideRev = high > high[1] and low < low[1] and close < open and nx_weakClose
+nx_threeLows = low < low[1] and low[1] < low[2] and low[2] < low[3]
+nx_belowThreeLows = close < ta.lowest(low[1], 3)
+nx_pivot = ta.pivotlow(low, nx_pivotLen, nx_pivotLen)
+var float nx_confirmedSwingLow = na
+if not na(nx_pivot) and barstate.isconfirmed
+    nx_confirmedSwingLow := nx_pivot
+nx_swingFail = not na(nx_confirmedSwingLow[1]) and close < nx_confirmedSwingLow[1] and close[1] >= nx_confirmedSwingLow[1]
+nx_benchmark = request.security(nx_rsSymbol, timeframe.period, close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+nx_relative = not na(nx_benchmark) and nx_benchmark != 0 ? close / nx_benchmark : na
+nx_selfBenchmark = syminfo.ticker == "SPY"
+nx_rsWeak = not nx_selfBenchmark and not na(nx_relative[7]) and nx_relative < nx_relative[7] and nx_relative < nx_relative[1]
+nx_MAWeak = close < ema21 or close < sma50
+nx_weeklyWeak = not na(confirmed10W) and close < confirmed10W // prior FINISHED weekly 10-SMA
+nx_priceFamily = nx_shock or nx_outsideRev or nx_swingFail or nx_belowThreeLows or nx_MAWeak
+nx_sellingFamily = nx_sellClimax or (nx_heavyVol and close < open) or nx_partScore < 42
+nx_technicalFamily = nx_momScore < 45 or nx_trendScore < 45 or nx_rsWeak or nx_rocLow or nx_bearDiv
+nx_families = (nx_priceFamily ? 1 : 0) + (nx_sellingFamily ? 1 : 0) + (nx_technicalFamily ? 1 : 0)
+// Previous bar's threshold represents the pre-candle structural reference.
+// A confirmed newDown automatically changes 'regime', so do not compare with the new DOWN level.
+nx_previousTrendEnd = trendEnd[1]
+nx_livePivotBreach = not barstate.isconfirmed and regime == 1 and not na(nx_previousTrendEnd) and close <= nx_previousTrendEnd
+nx_unexplainedBreach = barstate.isconfirmed and regime == 1 and not na(nx_previousTrendEnd) and close <= nx_previousTrendEnd
+nx_newConfirmedDown = newDown and barstate.isconfirmed
+nx_structuralThreat = nx_livePivotBreach or nx_unexplainedBreach or nx_newConfirmedDown
+nx_dangerBase = regime == 0 ? 0 : nx_structuralThreat or regime == -1 ? 3 : nx_shock or (nx_swingFail and nx_sellingFamily) or (nx_families >= 3 and (nx_swingFail or nx_belowThreeLows or nx_weeklyWeak)) ? 2 : nx_families >= 2 or nx_sellClimax or nx_outsideRev or nx_weeklyWeak ? 1 : 0
+nx_dangerRaw = nx_postShock ? math.max(nx_dangerBase, 2) : nx_dangerBase
+nx_danger = nx_enabled ? nx_dangerRaw : 0
+nx_dangerLabel = nx_danger == 3 ? (nx_livePivotBreach ? "CRITICAL · LIVE PIVOT BREACH" : nx_newConfirmedDown ? "CRITICAL · DOWN CONFIRMED" : nx_unexplainedBreach ? "CRITICAL · PIVOT/STATE MISMATCH" : "CRITICAL · DOWN TREND") : nx_danger == 2 ? (nx_postShock and nx_dangerBase < 2 ? "DANGER · POST-SHOCK WATCH" : "DANGER · STRUCTURAL DAMAGE") : nx_danger == 1 ? "CAUTION · DETERIORATION" : "NORMAL · NO MAJOR WARNING"
+nx_dangerReason = nx_livePivotBreach ? "Forming price is below PRIOR closing reversal level; confirm at bar close." : nx_unexplainedBreach ? "Confirmed close breached prior flip level without expected reversal; audit state." : nx_newConfirmedDown ? "Confirmed Livermore downside reversal on this bar." : nx_shock ? "Bear body " + str.tostring(nx_bearBodyATRx, "#.1") + " ATR; weak close " + str.tostring(nx_closeLoc, "#") + "% of range." : nx_postShock and nx_dangerBase < 3 ? "POST-SHOCK · confirmed bear shock " + str.tostring(nx_shockAge) + " bars ago; await repair above EMA21 and shock midpoint." : nx_swingFail ? "Confirmed swing-low support broke; validate existing stops." : nx_sellClimax ? "Heavy-volume lower close near the session low." : nx_danger > 0 ? "Price/volume/technical evidence is deteriorating; check original panels." : "No significant danger family currently confirmed."
+nx_dangerPlan = nx_danger >= 3 ? "NO NEW RISK; inspect Master OS EXIT/PROTECT now." : nx_danger == 2 ? "NO NEW RISK; Master OS PROTECT/TRIM review." : nx_danger == 1 ? "WAIT for repair / avoid chase; reassess ownership." : "Evidence neutral; entries still require Master OS permission."
+nx_freshDanger = barstate.isconfirmed and nx_enabled and nx_danger >= 2 and nz(nx_danger[1], 0) < 2
+nx_freshCritical = barstate.isconfirmed and nx_enabled and nx_danger == 3 and nz(nx_danger[1], 0) < 3
+
+// ═══ v1.2 · Diagnostic witness layer (does NOT alter nx_danger) ═══════════
+// Display current warning reasons individually: signals can overlap and are NOT
+// independent votes. Confirmed bar status is supplied separately in main desk.
+nx_diagNearLow = nx_weakClose and close < open
+nx_diagLowerLows = nx_threeLows or nx_belowThreeLows
+nx_diagMABreak = close < ema21 or close < sma50
+nx_diagVolSell = nx_sellClimax or (nx_heavyVol and close < open)
+nx_diagRS = nx_rsWeak
+nx_diagMomentum = nx_momScore < 45 or nx_rocLow or nx_bearDiv
+nx_diagExhaust = nx_bearDiv or nx_outsideRev
+nx_diagCount = (nx_shock ? 1 : 0) + (nx_swingFail ? 1 : 0) + (nx_diagNearLow ? 1 : 0) + (nx_diagLowerLows ? 1 : 0) + (nx_diagMABreak ? 1 : 0) + (nx_diagVolSell ? 1 : 0) + (nx_diagRS ? 1 : 0) + (nx_diagMomentum ? 1 : 0) + (nx_diagExhaust ? 1 : 0)
+// ADX/DI evidence from the existing XCheck method; NOT part of TECH HEALTH.
+[nx_diagDIplus, nx_diagDIminus, nx_diagADX] = ta.dmi(nx_diagADXLength, nx_diagADXSmooth)
+nx_diagBearTrend = nx_diagADX >= 25 and nx_diagDIminus > nx_diagDIplus
+// Weekly Miner DLB v11.3 baseline uses 21=>RSI21, Stoch13, K8, D8.
+// Request only the last completed weekly bar to avoid developing-week repaint.
+nx_dlbWK(float src) =>
+    float r = ta.rsi(src, 21)
+    float lo = ta.lowest(r, 13)
+    float hi = ta.highest(r, 13)
+    float k = ta.sma((r - lo) / math.max(hi - lo, 0.0001) * 100.0, 8)
+    float d = ta.sma(k, 8)
+    [k[1], d[1]]
+[nx_diagWK_K, nx_diagWK_D] = request.security(syminfo.tickerid, "W", nx_dlbWK(close), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_on)
+nx_diagWKTopping = nx_diagWK_D > 75 and nx_diagWK_K < 75
+nx_diagWKBull = nx_diagWK_D > 75 and nx_diagWK_K >= 75
+nx_diagWKBearing = nx_diagWK_D < 25 and nx_diagWK_K <= 25
+nx_diagWeakTrend = nx_diagBearTrend or nx_diagWKTopping or nx_diagWKBearing
+nx_diagPriceRead = (nx_shock ? "BEAR SHOCK · " : "") + (nx_swingFail ? "SWING LOW FAILED · " : "") + (nx_diagLowerLows ? "LOWER LOWS · " : "") + (nx_diagMABreak ? "MA BELOW · " : "")
+nx_diagSellRead = nx_diagVolSell ? "HEAVY-VOLUME SELLING" : nx_diagNearLow ? "CLOSE NEAR LOW" : "No major selling trigger"
+nx_diagMomRead = nx_diagMomentum ? "MOMENTUM WEAK" : "Momentum not below threshold"
+nx_diagRSRead = nx_diagRS ? "RELATIVE STRENGTH FALLING" : "No 7-bar RS warning"
+nx_diagCycleRead = nx_diagWKTopping ? "PRIOR WEEK: DLB TOPPING" : nx_diagWKBearing ? "PRIOR WEEK: EMBEDDED BEAR" : nx_diagWKBull ? "PRIOR WEEK: EMBEDDED BULL" : "PRIOR WEEK: NEUTRAL"
+
+// Provisional intrabar states are dashboard-only; alerts remain confirmed-close.
+
+// ── Background, bars and event markers ──────────────────────────────────────
+color phaseShade = regime == 0 ? na : phasePaused ? color.new(pauseColour, 88) : regime == 1 ? color.new(upColour, 91) : color.new(downColour, 91)
+bgcolor(showBackground ? phaseShade : na, title="Livermore Trend Phases")
+color phaseBar = regime == 0 ? na : phasePaused ? pauseColour : regime == 1 ? upColour : downColour
+barcolor(colorBars ? phaseBar : na, title="Market Key Bars")
+plotshape(showSignals and newUp, title="New Uptrend", style=shape.labelup, location=location.belowbar, color=upColour, text="UP", textcolor=color.white, size=size.tiny)
+plotshape(showSignals and newDown, title="New Downtrend", style=shape.labeldown, location=location.abovebar, color=downColour, text="DN", textcolor=color.white, size=size.tiny)
+plotshape(showSignals and pauseUp, title="Uptrend Pause", style=shape.labeldown, location=location.abovebar, color=pauseColour, text="P", textcolor=color.black, size=size.tiny)
+plotshape(showSignals and pauseDown, title="Downtrend Pause", style=shape.labelup, location=location.belowbar, color=pauseColour, text="P", textcolor=color.black, size=size.tiny)
+plotshape(showSignals and resumeUp, title="Uptrend Resumes", style=shape.labelup, location=location.belowbar, color=upColour, text="R", textcolor=color.white, size=size.tiny)
+plotshape(showSignals and resumeDown, title="Downtrend Resumes", style=shape.labeldown, location=location.abovebar, color=downColour, text="R", textcolor=color.white, size=size.tiny)
+
+if nx_showDangerMarker and nx_freshDanger
+    label.new(bar_index, high, nx_danger == 3 ? "D!" : "D", color=nx_danger == 3 ? color.maroon : color.orange, textcolor=color.white, style=label.style_label_down, size=size.tiny, tooltip=nx_dangerReason)
+
+// Historical fixed pivot dashes: created ONLY on confirmed transitions.
+var array<line> pivotLines = array.new_line()
+if closeConfirmed and showPivots and newPivotKind != 0 and not na(newPivotPrice)
+    color c = newPivotKind == 1 ? color.orange : color.rgb(63, 123, 210)
+    line pivotLine = line.new(bar_index, newPivotPrice, bar_index + 18, newPivotPrice, color=c, width=1, style=line.style_dashed)
+    array.push(pivotLines, pivotLine)
+    if array.size(pivotLines) > maxHistoricalLines
+        line.delete(array.shift(pivotLines))
+
+// One live key price line and label at the right edge.
+var line activeLine = na
+var label activeLabel = na
+if barstate.islast
+    if not na(activeLine)
+        line.delete(activeLine)
+    if not na(activeLabel)
+        label.delete(activeLabel)
+    if showKeyLine and not na(keyLevel)
+        color keyColor = phasePaused ? pauseColour : regime == 1 ? downColour : upColour
+        activeLine := line.new(math.max(0, bar_index - keyLineBars), keyLevel, bar_index + 12, keyLevel, color=keyColor, width=2, style=line.style_dashed)
+        activeLabel := label.new(bar_index + 12, keyLevel, keyMeaning + " " + f_money(keyLevel), style=label.style_label_left, color=keyColor, textcolor=color.white, size=size.small)
+
+// ── v1.2.3 multi-table presentation ONLY; preserves v1.2.1 calculations ──
+f_renderReadout(table briefing, string viewMode) =>
+    table.clear(briefing, 0, 0, 1, 18)
+    if showBrief
+        bool lightDesk = readoutTheme == "Light"
+        color deskBg = lightDesk ? color.rgb(237, 241, 247) : color.rgb(17, 29, 46)
+        color deskFg = lightDesk ? color.rgb(23, 35, 51) : color.rgb(234, 240, 248)
+        color headerBg = lightDesk ? color.rgb(207, 219, 235) : color.rgb(29, 47, 70)
+        color accentFg = lightDesk ? color.rgb(16, 78, 114) : color.aqua
+        color stateBg = nx_livePivotBreach ? color.maroon : regime == 0 ? color.gray : phasePaused ? pauseColour : regime == 1 ? upColour : downColour
+        color dangerBg = nx_danger == 3 ? color.rgb(153, 38, 50) : nx_danger == 2 ? color.rgb(178, 75, 29) : nx_danger == 1 ? color.rgb(142, 105, 24) : color.rgb(34, 106, 72)
+        string stateText = nx_livePivotBreach ? "UP · PROVISIONAL BREACH" : regime == 0 ? "WARM-UP" : regime == 1 ? (phasePaused ? "UP · PAUSED" : "UP · ACTIVE") : phasePaused ? "DOWN · PAUSED" : "DOWN · ACTIVE"
+        string stageText = barstate.isconfirmed ? "CLOSED BAR · CONFIRMED" : "FORMING BAR · PROVISIONAL"
+        string trendDescription = regime == 0 ? "The Market Key is warming up; trend evidence is incomplete." : nx_livePivotBreach ? "The previous uptrend remains the confirmed state, but the forming price has broken its prior reversal level." : regime == 1 and phasePaused ? "The established uptrend is pausing. A pullback is not yet a confirmed reversal." : regime == 1 ? "Livermore still records a confirmed uptrend. Monitor pivotal protection for deterioration." : phasePaused ? "The established downtrend is pausing; this bounce has not yet confirmed an uptrend." : "Livermore has confirmed a downtrend; rallies have not reversed the price structure."
+        string riskDescription = nx_livePivotBreach ? "A LIVE pivot breach is provisional until the candle closes." : nx_newConfirmedDown ? "The latest completed candle confirmed a Livermore downside reversal." : nx_shock ? "The bearish body spans " + str.tostring(nx_bearBodyATRx, "#.1") + " ATR, and price closed in the bottom " + str.tostring(nx_closeLoc, "#") + "% of its range." : nx_postShock ? "A recent confirmed bearish shock remains under review; price repair is incomplete." : nx_swingFail ? "Price has broken the confirmed swing-low support level." : nx_sellClimax ? "Heavy volume accompanied a lower close near the session low." : nx_danger > 0 ? "Several deterioration signals are present. Check price, momentum and participation together." : "No major danger family is currently active. This alone does not authorise an entry."
+        string technicalDescription = not nx_showPillars ? "Technical scores are hidden by user setting." : nx_trendScore < 45 and nx_momScore < 45 and nx_partScore < 42 ? "Trend quality, momentum and participation are all weak; sellers have control." : nx_trendScore < 45 ? "Trend structure is damaged even if some faster evidence is improving." : nx_momScore < 45 ? "Momentum is deteriorating despite the existing trend context." : nx_partScore < 42 ? "Volume-weighted participation indicates selling pressure." : nx_techHealth >= 75 ? "The four technical pillars are broadly supportive, subject to structural risk." : "Technical confirmation is mixed; wait for stronger alignment."
+        string nextLevelText = phasePaused ? "Resume only after a confirmed CLOSE " + (regime == 1 ? "> " : "< ") + f_money(resumeLevel) + "." : "Formal trend change requires a confirmed CLOSE " + (regime == 1 ? "<= " : ">= ") + f_money(trendEnd) + "."
+        string protectionText = regime == 1 ? "Uptrend reversal level " + f_money(trendEnd) : regime == -1 ? "Downtrend reversal level " + f_money(trendEnd) : "Not available during warm-up"
+        string contextText = not timeframe.isdaily ? "Daily entry-context checks require a 1D chart." : dailyContextOK ? "SMA50, last-confirmed 10-week SMA and extension checks pass." : "One or more NOW entry-context gates are not satisfied."
+        string repairText = nx_danger >= 2 ? "Wait for price structure, selling pressure and technical momentum to repair. " + nextLevelText : nx_danger == 1 ? "Watch whether selling pressure eases and the trend-support levels hold. " + nextLevelText : nextLevelText
+        string actionText = nx_danger >= 2 ? "NO NEW RISK. Review existing stops and ask Master OS to assess PROTECT / TRIM / EXIT." : nx_danger == 1 ? "WAIT / WATCH. Avoid chasing; Master OS still decides any entry or exit." : "WATCH for a valid opportunity; Master OS alone authorises START / ADD / EXIT."
+        string postShockText = not nx_postShockEnabled ? "Post-shock watch is switched off." : nx_postShock ? "Post-shock watch is active, " + str.tostring(nx_shockAge) + " of " + str.tostring(nx_postShockBars) + " bars after the shock." : nx_shock and barstate.isconfirmed ? "New confirmed bearish shock: the watch starts on the next bar." : "No active post-shock watch."
+        // View title and current confirmed-versus-forming status always appear first.
+        table.cell(briefing, 0, 0, "NOW LIVERMORE · " + str.upper(viewMode), text_color=deskFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+        table.cell(briefing, 1, 0, stateText, text_color=color.white, bgcolor=stateBg, text_size=f_text_size(textSizeInput))
+        table.cell(briefing, 0, 1, "BAR STATUS", text_color=accentFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+        table.cell(briefing, 1, 1, stageText, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+        table.cell(briefing, 0, 2, "DANGER STATUS", text_color=accentFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+        table.cell(briefing, 1, 2, nx_dangerLabel, text_color=color.white, bgcolor=dangerBg, text_size=f_text_size(textSizeInput))
+        if viewMode == "Executive"
+            table.cell(briefing, 0, 3, "WHAT IS HAPPENING?", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 3, trendDescription, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 4, "WHAT IS WRONG?", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 4, riskDescription, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 5, "TECHNICAL EVIDENCE", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 5, technicalDescription, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 6, "WHAT SHOULD I DO?", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 6, actionText, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 7, "WHAT TO WATCH NEXT", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 7, repairText, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 8, "LIVERMORE KEY LEVEL", text_color=accentFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 8, protectionText + " · movement S " + f_money(frozenS), text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 9, "POST-SHOCK STATUS", text_color=accentFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 9, postShockText, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 10, "NOW CONTEXT", text_color=accentFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 10, showContext ? contextText : "Context check hidden", text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+        else if viewMode == "Technical Detail"
+            string trendState = nx_trendScore >= 80 ? "STRONG" : nx_trendScore >= 65 ? "SUPPORTIVE" : nx_trendScore >= 45 ? "MIXED" : "DAMAGED"
+            string momentumState = nx_momScore >= 80 ? "ACCELERATING" : nx_momScore >= 65 ? "POSITIVE" : nx_momScore >= 45 ? "TRANSITION" : "DETERIORATING"
+            string participationState = nx_partScore >= 75 ? "STRONG BUYING" : nx_partScore >= 58 ? "ACCUMULATING" : nx_partScore >= 42 ? "MIXED" : "SELLING PRESSURE"
+            string expansionState = nx_expScore >= 65 ? "POSITIVE EXPANSION" : nx_expScore < 35 ? "NEGATIVE EXPANSION" : "MIXED / COMPRESSING"
+            string trendRead = nx_trendScore >= 65 ? "Structure, SQN and cloud favour the existing uptrend." : nx_trendScore >= 45 ? "Structural trend signals disagree; wait for repair." : "Structure, SQN and cloud indicate a damaged trend."
+            string momentumRead = nx_momScore >= 65 ? "3/10, two-bar momentum and Williams %R support upside timing." : nx_momScore >= 45 ? "Short-term momentum is transitioning; evidence is incomplete." : "3/10, two-bar momentum and Williams %R show deterioration."
+            string participationRead = nx_partScore >= 58 ? "Elder Force Index suggests buying participation." : nx_partScore >= 42 ? "Force Index is mixed; conviction is uncertain." : "Elder Force Index shows selling pressure dominates."
+            string expansionRead = nx_expScore >= 65 ? "Squeeze release / direction supports positive expansion." : nx_expScore < 35 ? "Compression/expansion model reflects negative momentum." : "Compression/expansion is not providing strong upside confirmation."
+            table.cell(briefing, 0, 3, "TREND QUALITY · " + str.tostring(nx_trendScore, "#") + " · " + trendState, text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 3, trendRead, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 4, "MOMENTUM · " + str.tostring(nx_momScore, "#") + " · " + momentumState, text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 4, momentumRead, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 5, "PARTICIPATION · " + str.tostring(nx_partScore, "#") + " · " + participationState, text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 5, participationRead, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 6, "EXPANSION · " + str.tostring(nx_expScore, "#") + " · " + expansionState, text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 6, expansionRead, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 7, "OVERALL TECH HEALTH", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 7, str.tostring(nx_techHealth, "#") + "/100 · " + technicalDescription, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 8, "ADX · TREND STRENGTH", text_color=accentFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 8, "ADX " + str.tostring(nx_diagADX, "#") + (nx_diagDIminus > nx_diagDIplus ? " · negative DI leads" : " · positive DI leads") + ". ADX measures trend strength, not direction alone.", text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 9, "WEEKLY CYCLE", text_color=accentFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 9, nx_diagDLB ? nx_diagCycleRead + " · last completed week only" : "Weekly DLB display disabled", text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 10, "NEXT STEP", text_color=accentFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 10, actionText, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+        else
+            table.cell(briefing, 0, 3, "ACTIVE WARNINGS", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 3, str.tostring(nx_diagCount) + " diagnostic conditions · overlapping, NOT independent votes or the original 33-signal count.", text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 4, "BEARISH SHOCK", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 4, nx_shock ? "An abnormal bearish body and weak close indicate a change in price character." : "No bearish shock under the selected ATR and close-location thresholds.", text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 5, "PRICE / STRUCTURE", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 5, nx_diagPriceRead == "" ? "No currently active price-structure diagnostic." : nx_diagPriceRead + " · Breakdown evidence; verify confirmed pivots.", text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 6, "SELLING / VOLUME", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 6, nx_diagSellRead + ". A low close and volume spike strengthen the selling-pressure warning.", text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 7, "MOMENTUM", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 7, nx_diagMomRead + ". Momentum confirms or questions the quality of a price move.", text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 8, "RELATIVE STRENGTH", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 8, nx_diagRSRead + ". RS is benchmark-relative, not a Livermore trend change.", text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 9, "TREND / WEEKLY CYCLE", text_color=accentFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 9, "ADX " + str.tostring(nx_diagADX, "#") + (nx_diagBearTrend ? " supports a bearish directional trend. " : " does not confirm a strong bearish directional trend. ") + (nx_diagDLB ? nx_diagCycleRead : "Weekly DLB hidden"), text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 0, 10, "WHAT TO WATCH NEXT", text_color=accentFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+            table.cell(briefing, 1, 10, repairText, text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+        table.cell(briefing, 0, 11, "IMPORTANT LEVELS", text_color=accentFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+        table.cell(briefing, 1, 11, "Resumption " + f_money(resumeLevel) + " · Trend flip " + f_money(trendEnd), text_color=deskFg, bgcolor=deskBg, text_size=f_text_size(textSizeInput))
+        table.cell(briefing, 0, 12, "AUTHORITY", text_color=accentFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+        table.cell(briefing, 1, 12, "Evidence only. NOW Master OS decides START / ADD / PROTECT / TRIM / EXIT.", text_color=deskFg, bgcolor=headerBg, text_size=f_text_size(textSizeInput))
+
+
+// ── v1.2.4 collision-safe single-table, read-first presentation ──
+// No modification to Livermore states, Danger calculations, XCheck formulas or screeners.
+f_unifiedRow(table tb, int r, string key, string value, color bg, color keyFg, color valFg, string sz) =>
+    table.cell(tb, 0, r, key, bgcolor=bg, text_color=keyFg, text_size=f_text_size(sz), text_halign=text.align_left)
+    table.cell(tb, 1, r, value, bgcolor=bg, text_color=valFg, text_size=f_text_size(sz), text_halign=text.align_left)
+
+f_renderUnified(table tb) =>
+    table.clear(tb, 0, 0, 1, 26)
+    if showBrief
+        bool lightDesk = readoutTheme == "Light"
+        color bg = lightDesk ? color.rgb(237, 241, 247) : color.rgb(17, 29, 46)
+        color fg = lightDesk ? color.rgb(23, 35, 51) : color.rgb(234, 240, 248)
+        color headBg = lightDesk ? color.rgb(207, 219, 235) : color.rgb(29, 47, 70)
+        color keyFg = lightDesk ? color.rgb(16, 78, 114) : color.aqua
+        color dangerBg = nx_danger == 3 ? color.rgb(153, 38, 50) : nx_danger == 2 ? color.rgb(178, 75, 29) : nx_danger == 1 ? color.rgb(142, 105, 24) : color.rgb(34, 106, 72)
+        color stateBg = nx_livePivotBreach ? color.maroon : regime == 0 ? color.gray : phasePaused ? pauseColour : regime == 1 ? upColour : downColour
+        string stateText = nx_livePivotBreach ? "UP · PROVISIONAL BREACH" : regime == 0 ? "WARM-UP" : regime == 1 ? (phasePaused ? "UP · PAUSED" : "UP · ACTIVE") : phasePaused ? "DOWN · PAUSED" : "DOWN · ACTIVE"
+        string trendDescription = regime == 0 ? "Trend calculation warming up." : nx_livePivotBreach ? "Previously confirmed uptrend; price has provisionally breached its reversal level." : regime == 1 and phasePaused ? "Established uptrend is pausing, not yet reversed." : regime == 1 ? "Confirmed uptrend; monitor pivotal protection." : phasePaused ? "Downtrend is pausing; rebound not yet a confirmed uptrend." : "Confirmed downtrend; rallies have not repaired structure."
+        string riskDescription = nx_livePivotBreach ? "Price is through the key reversal level intrabar; check the completed close." : nx_newConfirmedDown ? "Most recent completed bar confirmed a downside Livermore reversal." : nx_shock ? "Bearish body " + str.tostring(nx_bearBodyATRx, "#.1") + " ATR, close in bottom " + str.tostring(nx_closeLoc, "#") + "% of range." : nx_postShock ? "Recent bearish shock still under review; price has not repaired." : nx_swingFail ? "Confirmed swing-low support has broken." : nx_sellClimax ? "Heavy-volume selling with a lower close near the session low." : nx_danger > 0 ? "Technical deterioration; inspect structure, momentum and selling pressure." : "No major danger family currently active."
+        string actionText = nx_danger >= 2 ? "NO NEW RISK. Review stops; ask Master OS to evaluate PROTECT / TRIM / EXIT." : nx_danger == 1 ? "WAIT / WATCH. Avoid chasing and verify Master OS permission." : "WATCH. Master OS alone authorises any entry or exit."
+        string nextLevelText = phasePaused ? "Resume after confirmed CLOSE " + (regime == 1 ? "> " : "< ") + f_money(resumeLevel) : "Reverse after confirmed CLOSE " + (regime == 1 ? "<= " : ">= ") + f_money(trendEnd)
+        string repairText = nx_danger >= 2 ? "Require price structure, momentum and participation repair. " + nextLevelText : nx_danger == 1 ? "Look for easing sell pressure and support holding. " + nextLevelText : nextLevelText
+        string trendState = nx_trendScore >= 80 ? "STRONG" : nx_trendScore >= 65 ? "SUPPORTIVE" : nx_trendScore >= 45 ? "MIXED" : "DAMAGED"
+        string momState = nx_momScore >= 80 ? "ACCELERATING" : nx_momScore >= 65 ? "POSITIVE" : nx_momScore >= 45 ? "TRANSITION" : "DETERIORATING"
+        string partState = nx_partScore >= 75 ? "STRONG BUYING" : nx_partScore >= 58 ? "ACCUMULATING" : nx_partScore >= 42 ? "MIXED" : "SELLING PRESSURE"
+        string expState = nx_expScore >= 65 ? "POSITIVE EXPANSION" : nx_expScore < 35 ? "NEGATIVE EXPANSION" : "MIXED / COMPRESSING"
+        string trendRead = nx_trendScore >= 65 ? "Structure, SQN and cloud support trend." : nx_trendScore >= 45 ? "Structural evidence mixed; wait for repair." : "Structure, SQN and cloud indicate damage."
+        string momRead = nx_momScore >= 65 ? "3/10, 2-ROC and Williams %R support upside timing." : nx_momScore >= 45 ? "Momentum transitioning; signals incomplete." : "3/10, 2-ROC and Williams %R deteriorating."
+        string partRead = nx_partScore >= 58 ? "Force Index supports buying participation." : nx_partScore >= 42 ? "Force Index mixed; conviction uncertain." : "Force Index: sellers dominate."
+        string expRead = nx_expScore >= 65 ? "Expansion favours upside." : nx_expScore < 35 ? "Negative expansion / downside momentum." : "No strong positive expansion."
+        string postShockText = not nx_postShockEnabled ? "Disabled" : nx_postShock ? "Active, " + str.tostring(nx_shockAge) + "/" + str.tostring(nx_postShockBars) + " bars since confirmed shock" : nx_shock and barstate.isconfirmed ? "New confirmed shock; watch begins next bar" : "Inactive"
+        // Exactly one table at bottom-right, grouped for sequential reading.
+        f_unifiedRow(tb, 0, "NOW LIVERMORE · DECISION DESK", stateText, headBg, fg, fg, textSizeInput)
+        f_unifiedRow(tb, 1, "DANGER", nx_dangerLabel, dangerBg, color.white, color.white, textSizeInput)
+        f_unifiedRow(tb, 2, "EXECUTIVE · WHAT IS HAPPENING", "TREND → RISK → ACTION", headBg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 3, "TREND", trendDescription, bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 4, "WHAT IS WRONG", riskDescription, bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 5, "WHAT SHOULD I DO", actionText, bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 6, "WATCH NEXT", repairText, bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 7, "TECHNICAL · CROSS-CHECK", "FOUR PILLARS · CONFIRMATION ONLY", headBg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 8, "TREND QUALITY · " + str.tostring(nx_trendScore, "#") + " · " + trendState, trendRead, bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 9, "MOMENTUM · " + str.tostring(nx_momScore, "#") + " · " + momState, momRead, bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 10, "PARTICIPATION · " + str.tostring(nx_partScore, "#") + " · " + partState, partRead, bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 11, "EXPANSION · " + str.tostring(nx_expScore, "#") + " · " + expState, expRead, bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 12, "OVERALL TECH HEALTH", str.tostring(nx_techHealth, "#") + "/100 · " + (nx_techHealth < 45 ? "TECH DAMAGE" : nx_techHealth < 65 ? "MIXED / INCOMPLETE" : "TECHNICALLY SUPPORTIVE"), bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 13, "ADX / DIRECTION", "ADX " + str.tostring(nx_diagADX, "#") + (nx_diagDIminus > nx_diagDIplus ? " · -DI leads" : " · +DI leads") + "; strength is not direction.", bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 14, "WEEKLY CYCLE", nx_diagDLB ? nx_diagCycleRead + " · last completed week" : "Weekly DLB disabled", bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 15, "DANGER · ACTIVE EVIDENCE", "GROUPED CONDITIONS · NOT INDEPENDENT VOTES", headBg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 16, "ACTIVE WARNINGS", str.tostring(nx_diagCount) + " selected conditions; not equivalent to original 33-signal total", bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 17, "BEARISH SHOCK", nx_shock ? "Abnormal bearish body with weak close; price character changed." : "No current shock by configured thresholds.", bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 18, "PRICE / STRUCTURE", nx_diagPriceRead == "" ? "No active structure diagnostic." : nx_diagPriceRead + " · verify confirmed pivots.", bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 19, "SELLING / VOLUME", nx_diagSellRead + ". Weak close/volume strengthen the warning.", bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 20, "MOMENTUM / RS", nx_diagMomRead + " · " + nx_diagRSRead + ".", bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 21, "DANGER PLAN", actionText, bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 22, "LEVELS · NEXT FLIP", "CONFIRMED CLOSE REQUIRED", headBg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 23, "RESUME", f_money(resumeLevel) + " · " + (phasePaused ? "active resumption trigger" : "reference level"), bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 24, "TREND FLIP", f_money(trendEnd) + " · " + nextLevelText, bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 25, "POST-SHOCK", postShockText, bg, keyFg, fg, textSizeInput)
+        f_unifiedRow(tb, 26, "NOW CONTEXT", showContext ? (not timeframe.isdaily ? "1D chart needed for Daily context checks" : dailyContextOK ? "SMA50 / 10-week SMA / extension context passes" : "One or more entry-context gates fail") : "Context hidden", bg, keyFg, fg, textSizeInput)
+
+// v1.2.4: Create ONLY the table(s) for the selected mode.
+// TradingView table.clear() empties cells, but the table object still occupies
+// its anchor; the v1.2.3 preallocated bottom-right tables could hide each other.
+// Inputs re-execute the script, so conditional `var` initialization is safe.
+bool modeUnified = showBrief and readoutMode == "Unified Vertical"
+bool modeAll = showBrief and readoutMode == "All Tables"
+bool modeSingle = showBrief and not modeUnified and not modeAll
+var table unifiedTable = modeUnified ? table.new(position.bottom_right, 2, 27, border_width=1) : na
+var table executiveTable = modeAll ? table.new(position.top_right, 2, 19, border_width=1) : na
+var table technicalTable = modeAll ? table.new(position.middle_right, 2, 19, border_width=1) : na
+var table dangerTable = modeAll ? table.new(position.bottom_right, 2, 19, border_width=1) : na
+var table briefing = modeSingle ? table.new(f_position(briefPositionInput), 2, 19, border_width=1) : na
+if barstate.islast
+    if modeUnified
+        f_renderUnified(unifiedTable)
+    else if modeAll
+        f_renderReadout(executiveTable, "Executive")
+        f_renderReadout(technicalTable, "Technical Detail")
+        f_renderReadout(dangerTable, "Danger Detail")
+    else if modeSingle
+        f_renderReadout(briefing, readoutMode)
+
+// Optional single, compact diagnostic table: not another execution panel.
+// Only instantiate diagnostics when actually visible, and never stack them on
+// an occupied readout/ledger anchor. Unified and All Tables already contain them.
+bool diagRequested = nx_showDiagnostics and nx_enabled and modeSingle
+bool diagSlotFree = nx_diagPosition != briefPositionInput and (not showLedger or (nx_diagPosition != ledgerPositionInput and nx_diagPosition != "Bottom Left"))
+var table nx_diagTable = diagRequested and diagSlotFree ? table.new(f_position(nx_diagPosition), 2, 9, border_width=1) : na
+if barstate.islast and diagRequested and diagSlotFree
+    table.clear(nx_diagTable, 0, 0, 1, 8)
+    color db = color.rgb(20, 30, 44)
+    color fg = color.rgb(229, 235, 242)
+    table.cell(nx_diagTable, 0, 0, "NOW DANGER DETAILS", text_color=color.white, bgcolor=color.rgb(108, 37, 52), text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 1, 0, str.tostring(nx_diagCount) + " active conditions (overlap)", text_color=color.white, bgcolor=color.rgb(108, 37, 52), text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 0, 1, "PRICE / STRUCTURE", text_color=color.aqua, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 1, 1, nx_diagPriceRead == "" ? "No current trigger" : nx_diagPriceRead, text_color=fg, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 0, 2, "SELLING / VOLUME", text_color=color.aqua, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 1, 2, nx_diagSellRead, text_color=fg, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 0, 3, "MOMENTUM", text_color=color.aqua, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 1, 3, nx_diagMomRead, text_color=fg, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 0, 4, "RELATIVE STRENGTH", text_color=color.aqua, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 1, 4, nx_diagRSRead, text_color=fg, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 0, 5, "ADX / DIRECTION", text_color=color.aqua, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 1, 5, "ADX " + str.tostring(nx_diagADX, "#") + (nx_diagDIminus > nx_diagDIplus ? " · -DI leading" : " · +DI leading") + (nx_diagBearTrend ? " · BEAR TREND" : ""), text_color=fg, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 0, 6, "WEEKLY DLB", text_color=color.aqua, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 1, 6, nx_diagDLB ? nx_diagCycleRead : "Hidden", text_color=fg, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 0, 7, "FOUR PILLARS", text_color=color.aqua, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 1, 7, "T " + str.tostring(nx_trendScore, "#") + " · M " + str.tostring(nx_momScore, "#") + " · P " + str.tostring(nx_partScore, "#") + " · E " + str.tostring(nx_expScore, "#"), text_color=fg, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 0, 8, "STATUS / AUTHORITY", text_color=color.aqua, bgcolor=db, text_size=f_text_size(textSizeInput))
+    table.cell(nx_diagTable, 1, 8, (barstate.isconfirmed ? "CLOSED" : "FORMING") + " · Evidence only; Master OS decides", text_color=fg, bgcolor=db, text_size=f_text_size(textSizeInput))
+
+// ── Livermore six-column ledger (chronological oldest to newest) ────────────
+// Ledger never shares a table anchor with the active dashboard.
+bool ledgerClash = showBrief and ((modeUnified and ledgerPositionInput == "Bottom Right") or (modeAll and (ledgerPositionInput == "Top Right" or ledgerPositionInput == "Middle Right" or ledgerPositionInput == "Bottom Right")) or (modeSingle and ledgerPositionInput == briefPositionInput))
+string safeLedgerPosition = ledgerClash ? (briefPositionInput == "Bottom Left" and modeSingle ? "Bottom Center" : "Bottom Left") : ledgerPositionInput
+var table ledger = showLedger ? table.new(f_position(safeLedgerPosition), 7, ledgerRows + 2, border_width=1) : na
+if barstate.islast and showLedger
+    color h = color.rgb(33, 52, 81)
+    color b = color.rgb(22, 29, 42)
+    color light = color.rgb(232, 236, 242)
+    table.cell(ledger, 0, 0, "DATE", text_color=light, bgcolor=h, text_size=f_text_size(textSizeInput))
+    table.cell(ledger, 1, 0, "SEC RALLY", text_color=light, bgcolor=h, text_size=f_text_size(textSizeInput))
+    table.cell(ledger, 2, 0, "NAT RALLY", text_color=light, bgcolor=h, text_size=f_text_size(textSizeInput))
+    table.cell(ledger, 3, 0, "UPTREND", text_color=light, bgcolor=h, text_size=f_text_size(textSizeInput))
+    table.cell(ledger, 4, 0, "DOWNTREND", text_color=light, bgcolor=h, text_size=f_text_size(textSizeInput))
+    table.cell(ledger, 5, 0, "NAT REACT", text_color=light, bgcolor=h, text_size=f_text_size(textSizeInput))
+    table.cell(ledger, 6, 0, "SEC REACT", text_color=light, bgcolor=h, text_size=f_text_size(textSizeInput))
+    int count = math.min(array.size(ledgerDates), ledgerRows)
+    for row = 0 to ledgerRows - 1
+        int idx = count - row - 1
+        string d = idx >= 0 ? str.format_time(array.get(ledgerDates, idx), "yyyy-MM-dd", syminfo.timezone) : ""
+        int c = idx >= 0 ? array.get(ledgerCols, idx) : -1
+        float p = idx >= 0 ? array.get(ledgerPrices, idx) : na
+        int marker = idx >= 0 ? array.get(ledgerPivots, idx) : 0
+        table.cell(ledger, 0, row + 1, d, bgcolor=b, text_color=light, text_size=f_text_size(textSizeInput))
+        for col = 0 to 5
+            bool filled = c == col
+            color cellBg = filled and marker != 0 ? color.rgb(216, 193, 86) : b
+            color cellFg = filled and marker != 0 ? color.black : col == COL_UP ? color.rgb(93, 220, 150) : col == COL_DN ? color.rgb(242, 117, 118) : light
+            table.cell(ledger, col + 1, row + 1, filled ? f_money(p) : "", bgcolor=cellBg, text_color=cellFg, text_size=f_text_size(textSizeInput))
+    table.cell(ledger, 0, ledgerRows + 1, "PIVOTS", bgcolor=h, text_color=light, text_size=f_text_size(textSizeInput))
+    table.cell(ledger, 1, ledgerRows + 1, "Gold=key", bgcolor=h, text_color=light, text_size=f_text_size(textSizeInput))
+    for col = 2 to 6
+        table.cell(ledger, col, ledgerRows + 1, "", bgcolor=h)
+// Hidden ledger has no table object to clear.
+
+// ── Pine Screener outputs (data-window only; < 64 total plot counts) ─────────
+plot(regime, "SCAN · Trend Direction (+1/-1)", display=display.data_window)
+plot(phasePaused and regime != 0 ? 1 : 0, "SCAN · PAUSED", display=display.data_window)
+plot(regime == 1 and not phasePaused ? 1 : 0, "SCAN · UP ACTIVE", display=display.data_window)
+plot(regime == -1 and not phasePaused ? 1 : 0, "SCAN · DOWN ACTIVE", display=display.data_window)
+plot(newUp ? 1 : 0, "SCAN · UP START FRESH", display=display.data_window)
+plot(resumeUp ? 1 : 0, "SCAN · UP RESUME FRESH", display=display.data_window)
+plot(pauseUp ? 1 : 0, "SCAN · UP PAUSE FRESH", display=display.data_window)
+plot(newDown ? 1 : 0, "SCAN · DOWN START FRESH", display=display.data_window)
+plot(resumeDown ? 1 : 0, "SCAN · DOWN RESUME FRESH", display=display.data_window)
+plot(pauseDown ? 1 : 0, "SCAN · DOWN PAUSE FRESH", display=display.data_window)
+plot(keyLevel, "SCAN · NEXT KEY PRICE", display=display.data_window)
+plot(trendEnd, "SCAN · STRUCTURAL REVERSAL PRICE", display=display.data_window)
+plot(resumeLevel, "SCAN · PAUSE RESUME PRICE", display=display.data_window)
+plot(frozenS, "SCAN · MOVEMENT S", display=display.data_window)
+plot(ledgerColumn, "SCAN · SIX-COLUMN ID (0..5)", display=display.data_window)
+plot(extensionATR, "SCAN · SMA50 EXTENSION ATR", display=display.data_window)
+plot(dailyContextOK ? 1 : 0, "SCAN · NOW CONTEXT FILTER (NOT ENTRY)", display=display.data_window)
+plot(upTrendGain, "SCAN · UPTREND MOVE %", display=display.data_window)
+
+// Alerts can be configured 'Once Per Bar Close'; series triggers are already
+// limited to confirmed bars inside the state machine.
+alertcondition(newUp, "NOW Livermore · Uptrend Begins", "NOW Livermore: uptrend began on {{ticker}} {{interval}}. Close {{close}}.")
+alertcondition(newDown, "NOW Livermore · Downtrend Begins", "NOW Livermore: downtrend began on {{ticker}} {{interval}}. Close {{close}}.")
+alertcondition(pauseUp, "NOW Livermore · Uptrend Pauses", "NOW Livermore: uptrend paused on {{ticker}} {{interval}}. Close {{close}}.")
+alertcondition(pauseDown, "NOW Livermore · Downtrend Pauses", "NOW Livermore: downtrend paused on {{ticker}} {{interval}}. Close {{close}}.")
+alertcondition(resumeUp, "NOW Livermore · Uptrend Resumes", "NOW Livermore: uptrend resumed on {{ticker}} {{interval}}. Close {{close}}.")
+alertcondition(resumeDown, "NOW Livermore · Downtrend Resumes", "NOW Livermore: downtrend resumed on {{ticker}} {{interval}}. Close {{close}}.")
+alertcondition(newUp or resumeUp, "NOW Livermore · Any Bullish Transition", "NOW Livermore: bullish transition on {{ticker}} {{interval}}. Close {{close}}.")
+alertcondition(newDown or resumeDown, "NOW Livermore · Any Bearish Transition", "NOW Livermore: bearish transition on {{ticker}} {{interval}}. Close {{close}}.")
+
+
+// ═══ New v1.1/7.2 screener fields (same common engine in both scripts) ═══
+plot(nx_danger, "NX · DANGER STATE 0-3", display=display.data_window)
+plot(nx_freshDanger ? 1 : 0, "NX · FRESH DANGER", display=display.data_window)
+plot(nx_freshCritical ? 1 : 0, "NX · FRESH CRITICAL", display=display.data_window)
+plot(nx_shock ? 1 : 0, "NX · BEAR SHOCK", display=display.data_window)
+plot(nx_postShock ? 1 : 0, "NX · POST SHOCK WATCH", display=display.data_window)
+plot(na(nx_shockAge) ? -1 : nx_shockAge, "NX · BARS SINCE BEAR SHOCK", display=display.data_window)
+plot(nx_sellClimax ? 1 : 0, "NX · HEAVY VOLUME WEAK CLOSE", display=display.data_window)
+plot(nx_swingFail ? 1 : 0, "NX · SWING LOW FAILURE", display=display.data_window)
+plot(nx_momScore, "NX · MOMENTUM SCORE", display=display.data_window)
+plot(nx_partScore, "NX · PARTICIPATION SCORE", display=display.data_window)
+plot(nx_techHealth, "NX · TECH HEALTH", display=display.data_window)
+
+
+plot(nx_diagCount, "NX · DIAGNOSTIC CONDITIONS (OVERLAP)", display=display.data_window)
+plot(nx_diagBearTrend ? 1 : 0, "NX · ADX BEAR TREND", display=display.data_window)
+plot(nx_diagWKTopping ? 1 : 0, "NX · CONFIRMED WEEKLY DLB TOPPING", display=display.data_window)
+
+alertcondition(nx_freshDanger, "NOW Danger · Fresh DANGER", "NOW Danger DANGER/CRITICAL on {{ticker}} {{interval}} at {{close}}. Evidence only; Master OS governs actions.")
+alertcondition(nx_freshCritical, "NOW Danger · Fresh CRITICAL", "NOW Danger CRITICAL on {{ticker}} {{interval}} at {{close}}. Check Livermore and Master OS protection.")
+alertcondition(barstate.isconfirmed and nx_shock, "NOW Danger · Bear Shock", "NOW Danger bearish body/weak close shock on {{ticker}} {{interval}}.")
+alertcondition(nx_postShockStart, "NOW Danger · Post-Shock Watch Begins", "NOW Danger: post-shock watch active on {{ticker}} {{interval}}; independent evidence, not an exit signal.")
