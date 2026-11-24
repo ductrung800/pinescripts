@@ -1,0 +1,112 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ATraderNotes
+
+//@version=6
+indicator('Enhanced OBV with NH/NHBP Dots and Volume Ratio',format = format.volume, shorttitle = 'Enhanced OBV', overlay = false)
+
+//==============================================================================
+// Input Settings
+//==============================================================================
+
+// Lookback period for New High detection
+lookback_period = input.int(65, title = 'Lookback Period (Bars)', minval = 20, maxval = 252, tooltip = 'Default is 65 bars (~3 months on daily chart). Use 130 for 6 months, 252 for 12 months')
+
+// Volume ratio color thresholds
+buying_threshold = input.float(1.0, title = 'Buying Pressure Threshold', minval = 0.1, step = 0.1, tooltip = 'Up/Down Volume Ratio threshold for buying pressure')
+strong_buying = input.float(1.5, title = 'Strong Buying Threshold', minval = 0.1, step = 0.1, tooltip = 'Up/Down Volume Ratio threshold for strong buying pressure')
+very_strong_buying = input.float(2.0, title = 'Very Strong Buying Threshold', minval = 0.1, step = 0.1, tooltip = 'Up/Down Volume Ratio threshold for very strong buying pressure')
+
+// Visual settings
+show_nh_dots = input.bool(true, title = 'Show New High (NH) Dots')
+show_nhbp_dots = input.bool(true, title = 'Show New High Before Price (NHBP) Dots')
+
+//==============================================================================
+// OBV Calculation
+//==============================================================================
+
+// Calculate OBV using the built-in function
+obv = ta.obv
+
+//==============================================================================
+// Up/Down Volume Ratio Calculation
+//==============================================================================
+
+// Calculate up and down volume over lookback period
+upVolume = math.sum(close > close[1] ? volume : 0, lookback_period)
+//downVolume = math.sum(close < close[34] ? volume : 0, lookback_period)
+// CORRECT — compare to previous bar's close
+downVolume = math.sum(close < close[1] ? volume : 0, lookback_period)
+
+// Calculate Up/Down Volume Ratio (avoid division by zero)
+udRatio = downVolume > 0 ? upVolume / downVolume : upVolume > 0 ? 999 : 1
+
+//==============================================================================
+// OBV Color Based on Volume Ratio
+//==============================================================================
+
+// Define color based on Up/Down Volume Ratio
+obvColor = udRatio >= very_strong_buying ? color.lime : udRatio >= strong_buying ? color.aqua : udRatio >= buying_threshold ? color.blue : color.red // Very strong buying (green) udRatio >= strong_buying ? color.aqua :          // Strong buying (cyan) udRatio >= buying_threshold ? color.blue :       // Buying pressure (blue) color.red                                        // Selling pressure (red)
+
+//==============================================================================
+// New High Detection for OBV
+//==============================================================================
+
+// Check if current OBV is a new high over the lookback period
+obvNewHigh = obv >= ta.highest(obv, lookback_period)
+
+// Check if current price is NOT making a new high (NHBP condition)
+priceNewHigh = high >= ta.highest(high, lookback_period)
+obvNHBP = obvNewHigh and not priceNewHigh
+
+//==============================================================================
+// Plotting
+//==============================================================================
+
+// Plot OBV line with dynamic color
+plot(obv, title = 'OBV', color = obvColor, linewidth = 2)
+
+// Plot New High dots (Green)
+plotshape(show_nh_dots and obvNewHigh and priceNewHigh ? obv : na, title = 'NH (New High)', style = shape.circle, location = location.absolute, color = color.green, size = size.tiny)
+
+// Plot New High Before Price dots (Orange/Yellow)
+plotshape(show_nhbp_dots and obvNHBP ? obv : na, title = 'NHBP (New High Before Price)', style = shape.circle, location = location.absolute, color = color.orange, size = size.small)
+
+//==============================================================================
+// Additional Information Display
+//==============================================================================
+nh_count = math.sum(obvNewHigh and priceNewHigh ? 1 : 0, lookback_period)
+nhbp_count = math.sum(obvNHBP ? 1 : 0, lookback_period)
+
+// Create a table for displaying current ratio
+if barstate.islast
+    var table infoTable = table.new(position.top_right, 2, 4, bgcolor = color.white, border_width = 1)
+
+    table.cell(infoTable, 0, 0, 'Up/Down Ratio', text_color = color.black, text_size = size.auto)
+    table.cell(infoTable, 1, 0, str.tostring(udRatio, '#.##'), text_color = color.black, text_size = size.auto)
+
+    table.cell(infoTable, 0, 1, 'Signal', text_color = color.black, text_size = size.auto)
+    signal_text = udRatio >= very_strong_buying ? 'Very Strong Buy' : udRatio >= strong_buying ? 'Strong Buy' : udRatio >= buying_threshold ? 'Buy Pressure' : 'Sell Pressure'
+    signal_color = udRatio >= buying_threshold ? color.green : color.red
+    table.cell(infoTable, 1, 1, signal_text, text_color = signal_color, text_size = size.auto)
+
+    table.cell(infoTable, 0, 2, 'NH Count', text_color = color.black, text_size = size.auto)
+    table.cell(infoTable, 1, 2, str.tostring(nh_count), text_color = color.black, text_size = size.auto)
+
+    table.cell(infoTable, 0, 3, 'NHBP Count', text_color = color.black, text_size = size.auto)
+    table.cell(infoTable, 1, 3, str.tostring(nhbp_count), text_color = color.orange, text_size = size.auto)
+
+//==============================================================================
+// Zero Line
+//==============================================================================
+
+// Add a zero line for reference (optional, can be removed if not needed)
+//hline(0, title="Zero Line", color=color.gray, linestyle=hline.style_dashed)
+
+//==============================================================================
+// Alerts
+//==============================================================================
+
+// Alert conditions
+alertcondition(obvNHBP, title = 'NHBP Alert', message = 'OBV New High Before Price detected - potential accumulation')
+alertcondition(udRatio >= very_strong_buying and udRatio[1] < very_strong_buying, title = 'Very Strong Buying Alert', message = 'Very strong buying pressure detected (U/D Ratio >= 2.0)')
+alertcondition(obvNewHigh and priceNewHigh, title = 'NH Alert', message = 'OBV and Price both making new highs')
