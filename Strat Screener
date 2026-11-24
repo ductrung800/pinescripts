@@ -1,0 +1,405 @@
+//@version=6
+indicator("#TheStrat 2dG + FTFC Sniper Screener (D/W/M)", "Strat 2dG Screener", true)
+
+// ========================================================================= //
+// 1. INPUTS
+// ========================================================================= //
+grp_ftfc = "Higher Timeframes (FTFC / Weekly In Force / 2dG)"
+tf_1       = input.timeframe("W", "Weekly TF (FTFC 1, Weekly In Force, Weekly 2dG)", group=grp_ftfc)
+tf_2       = input.timeframe("M", "Monthly TF (FTFC 2, Monthly 2dG)", group=grp_ftfc)
+alert_close = input.bool(false, "Evaluate on Bar Close Only", group=grp_ftfc, tooltip="OFF = scan works any time of day (recommended for the Pine Screener). ON = only confirmed bars pass (useful for alerts).")
+
+grp_2dg = "2dG Timeframes (for 2dG Master column)"
+use_d   = input.bool(true,  "Include Daily 2dG",   group=grp_2dg)
+use_w   = input.bool(true,  "Include Weekly 2dG",  group=grp_2dg)
+use_m   = input.bool(true,  "Include Monthly 2dG", group=grp_2dg)
+tf_combo = input.string("Any", "Combine selected timeframes with", options=["Any", "All"], group=grp_2dg, tooltip="Any = at least one selected TF is 2dG. All = every selected TF is 2dG at the same time.")
+
+grp_scr_flt = "Screener Requirements (ADR/ATR/SMA)"
+use_adrp    = input.bool(false, "Require Minimum ADR%", group=grp_scr_flt)
+adr_len     = input.int(20, "ADR% Length", group=grp_scr_flt)
+adr_min     = input.float(4.0, "Min ADR% Threshold", group=grp_scr_flt)
+use_atrp    = input.bool(false, "Require Minimum ATR%", group=grp_scr_flt)
+atr_len     = input.int(14, "ATR% Length", group=grp_scr_flt)
+atr_min     = input.float(4.0, "Min ATR% Threshold", group=grp_scr_flt)
+use_50sma   = input.bool(false, "Require Close > 50 SMA", group=grp_scr_flt)
+
+grp_rs = "Relative Strength (RS Rating) Settings"
+use_rs_rating = input.bool(true, "Require Minimum RS Rating in Combined Alerts", group=grp_rs)
+rsFilterLevel = input.int(80, "Minimum RS Rating Threshold", minval=1, maxval=99, group=grp_rs)
+bench_sym     = input.symbol("SPX", "Index to Compare (RS Benchmark)", group=grp_rs)
+
+// ========================================================================= //
+// 2. DATA RETRIEVAL (EXACTLY 5 REQUESTS: D bundle, W, M, Benchmark, Seed)
+// ========================================================================= //
+dailyBundle() =>
+    c = close
+    o = open
+    h = high
+    l = low
+
+    // Moving Averages
+    sma50  = ta.sma(c, 50)
+    sma150 = ta.sma(c, 150)
+    sma200 = ta.sma(c, 200)
+    sma200_22 = sma200[22]
+
+    // Volatility & ADR/ATR
+    atr14 = ta.atr(14)
+    atr14_pct = c > 0 ? (atr14 / c) * 100 : na
+
+    adr_high = ta.sma(h, adr_len)
+    adr_low  = ta.sma(l, adr_len)
+    adrp     = c > 0 ? ((adr_high - adr_low) / c) * 100 : na
+
+    atr_abs  = ta.rma(ta.tr(true), atr_len)
+    atrp     = c > 0 ? (atr_abs / c) * 100 : na
+
+    // Minervini Trend Template (8-Point Score, daily-bar lookbacks)
+    highest_price = ta.highest(h, 260)
+    lowest_price  = ta.lowest(l, 260)
+
+    three_month_rs  = 0.4 * (c / c[63])
+    six_month_rs    = 0.2 * (c / c[126])
+    nine_month_rs   = 0.2 * (c / c[189])
+    twelve_month_rs = 0.2 * (c / c[252])
+    mm_rs           = (three_month_rs + six_month_rs + nine_month_rs + twelve_month_rs) * 100
+
+    c_1 = (c > sma150) and (c > sma200) ? 1 : 0
+    c_2 = sma150 > sma200 ? 1 : 0
+    c_3 = sma200 > sma200_22 ? 1 : 0
+    c_4 = (sma50 > sma150) and (sma50 > sma200) ? 1 : 0
+    c_5 = c > sma50 ? 1 : 0
+    c_6 = lowest_price > 0 and ((c / lowest_price) - 1) * 100 >= 25 ? 1 : 0
+    c_7 = highest_price > 0 and (1 - (c / highest_price)) * 100 <= 25 ? 1 : 0
+    c_8 = mm_rs > 70 ? 1 : 0
+    mm_score = c_1 + c_2 + c_3 + c_4 + c_5 + c_6 + c_7 + c_8
+
+    // Institutional Distances
+    ma_gain_pct = sma50 > 0 ? (c - sma50) / sma50 * 100 : na
+    xfrom50     = atr14_pct > 0 ? ma_gain_pct / atr14_pct : na
+    change_pct  = c[1] > 0 ? (c - c[1]) / c[1] * 100 : na
+    change_open_pct = o > 0 ? (c - o) / o * 100 : na
+
+    pdh = h[1]
+    pct_from_pdh = pdh > 0 ? (h - pdh) / pdh * 100 : na
+
+    avg_daily_vol = ta.sma(volume, 10)[1]
+    relvol_pct    = avg_daily_vol > 0 ? volume / avg_daily_vol * 100 : na
+
+    [float(mm_score), xfrom50, atr14_pct, change_pct, change_open_pct, atr14, pct_from_pdh, relvol_pct, c, sma50, sma200, adrp, atrp, o, h, l, h[1], l[1], h[2], l[2], h[3], l[3], h[4], l[4]]
+
+// Request 1: Daily bundle (metrics + 5 bars of OHLC history for Strat combos)
+[mm_score, xfrom50, atr14_pct, change_pct, change_open_pct, atr14_daily, pct_from_pdh, relvol_pct, s_c, sma50_daily, sma200_daily, adrp, atrp, s_o, s_h, s_l, s_h1, s_l1, s_h2, s_l2, s_h3, s_l3, s_h4, s_l4] = request.security(
+     syminfo.tickerid, "D", dailyBundle(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// Request 2: Weekly (O, H, L, C + previous H/L for 2dG and Weekly In Force)
+[w_o, w_h, w_l, w_c, w_h1, w_l1] = request.security(
+     syminfo.tickerid, tf_1, [open, high, low, close, high[1], low[1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// Request 3: Monthly (O, H, L, C + previous H/L for 2dG and FTFC)
+[m_o, m_h, m_l, m_c, m_h1, m_l1] = request.security(
+     syminfo.tickerid, tf_2, [open, high, low, close, high[1], low[1]], gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// Request 4: Benchmark daily close (RS rating + RS14)
+benchCloseDa = request.security(bench_sym, "D", close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// Request 5 is request.seed() inside the RS engine below
+
+rs14_spy = s_c[14] > 0 and benchCloseDa[14] > 0 ? (s_c / s_c[14]) / (benchCloseDa / benchCloseDa[14]) * 100 : na
+
+// ========================================================================= //
+// 3. STRAT CLASSIFICATION & 2dG / 2uR LOGIC
+// ========================================================================= //
+classify_bar(float _h, float _l, float _hp, float _lp) =>
+    hx = _h > _hp
+    lx = _l < _lp
+    hx and lx ? "3" : hx ? "2U" : lx ? "2D" : "1"
+
+// 2dG = broke prior low, did NOT break prior high, closed green
+f_is2dG(float _o, float _h, float _l, float _c, float _hp, float _lp) =>
+    (_l < _lp) and (_h <= _hp) and (_c > _o)
+
+// 2uR = broke prior high, did NOT break prior low, closed red
+f_is2uR(float _o, float _h, float _l, float _c, float _hp, float _lp) =>
+    (_h > _hp) and (_l >= _lp) and (_c < _o)
+
+get_combo(float _o, float _c, float _h, float _l, float _hp, float _lp, float _hp2, float _lp2, float _hp3, float _lp3, float _hp4, float _lp4) =>
+    b1 = classify_bar(_h, _l, _hp, _lp)
+    b2 = classify_bar(_hp, _lp, _hp2, _lp2)
+    b3 = classify_bar(_hp2, _lp2, _hp3, _lp3)
+    b4 = classify_bar(_hp3, _lp3, _hp4, _lp4)
+    string lbl = ""
+
+    if b2 == "1" and b1 == "3"
+        lbl := _c > _o ? "1-3 Bull Rev" : "1-3 Bear Rev"
+    else if b4 == "2U" and b3 == "2U" and b2 == "2D" and b1 == "2U"
+        lbl := "2222 Bull RJ"
+    else if b4 == "2D" and b3 == "2D" and b2 == "2U" and b1 == "2D"
+        lbl := "2222 Bear RJ"
+    else if b3 == "2D" and b2 == "2D" and b1 == "2D"
+        lbl := "222 Bear"
+    else if b3 == "2U" and b2 == "2U" and b1 == "2U"
+        lbl := "222 Bull"
+    else if b3 == "2D" and b2 == "1" and b1 == "2D"
+        lbl := "212 Bear MM"
+    else if b3 == "2U" and b2 == "1" and b1 == "2U"
+        lbl := "212 Bull MM"
+    else if b3 == "3" and b2 == "2U" and b1 == "2D"
+        lbl := "322 Bear Rev"
+    else if b3 == "3" and b2 == "2D" and b1 == "2U"
+        lbl := "322 Bull Rev"
+    else if b3 == "3" and b2 == "1" and b1 == "2D"
+        lbl := "312 Bear Rev"
+    else if b3 == "3" and b2 == "1" and b1 == "2U"
+        lbl := "312 Bull Rev"
+    else if b3 == "2U" and b2 == "1" and b1 == "2D"
+        lbl := "212 Bear Rev"
+    else if b3 == "2D" and b2 == "1" and b1 == "2U"
+        lbl := "212 Bull Rev"
+    else if b3 == "1" and b2 == "2U" and b1 == "2D"
+        lbl := "122 Bear Rev"
+    else if b3 == "1" and b2 == "2D" and b1 == "2U"
+        lbl := "122 Bull Rev"
+    else if b2 == "2U" and b1 == "2D"
+        lbl := "22 Bear Rev"
+    else if b2 == "2D" and b1 == "2U"
+        lbl := "22 Bull Rev"
+    lbl
+
+// Daily bar type + combo
+bar_type = classify_bar(s_h, s_l, s_h1, s_l1)
+combo    = get_combo(s_o, s_c, s_h, s_l, s_h1, s_l1, s_h2, s_l2, s_h3, s_l3, s_h4, s_l4)
+
+// 2dG / 2uR on each timeframe
+is_2dG_D = f_is2dG(s_o, s_h, s_l, s_c, s_h1, s_l1)
+is_2dG_W = f_is2dG(w_o, w_h, w_l, w_c, w_h1, w_l1)
+is_2dG_M = f_is2dG(m_o, m_h, m_l, m_c, m_h1, m_l1)
+
+is_2uR_D = f_is2uR(s_o, s_h, s_l, s_c, s_h1, s_l1)
+is_2uR_W = f_is2uR(w_o, w_h, w_l, w_c, w_h1, w_l1)
+is_2uR_M = f_is2uR(m_o, m_h, m_l, m_c, m_h1, m_l1)
+
+// Combine selected 2dG timeframes
+int sel_count = (use_d ? 1 : 0) + (use_w ? 1 : 0) + (use_m ? 1 : 0)
+int hit_count = (use_d and is_2dG_D ? 1 : 0) + (use_w and is_2dG_W ? 1 : 0) + (use_m and is_2dG_M ? 1 : 0)
+bool any_2dG  = sel_count > 0 and hit_count > 0
+bool all_2dG  = sel_count > 0 and hit_count == sel_count
+bool combined_2dG = tf_combo == "Any" ? any_2dG : all_2dG
+
+// FTFC: Daily, Weekly and Monthly candles all the same colour
+ftfc_bull = (s_c > s_o) and (w_c > w_o) and (m_c > m_o)
+ftfc_bear = (s_c < s_o) and (w_c < w_o) and (m_c < m_o)
+
+// Weekly In Force: price beyond previous weekly high / low
+in_force_up   = s_c > w_h1
+in_force_down = s_c < w_l1
+
+valid = alert_close ? barstate.isconfirmed : true
+
+// Intraday Low of Day Distance
+var float lowToday = na
+if ta.change(time("D")) != 0
+    lowToday := low
+else
+    lowToday := math.min(nz(lowToday, low), low)
+
+pct_from_lod = atr14_daily > 0 ? ((close - lowToday) / atr14_daily) * 100 : na
+
+// Institutional Boolean Filters
+bool pass_adr = use_adrp ? (nz(adrp) >= adr_min) : true
+bool pass_atr = use_atrp ? (nz(atrp) >= atr_min) : true
+bool pass_sma = use_50sma ? (s_c > sma50_daily) : true
+bool pass_all = pass_adr and pass_atr and pass_sma
+
+// 2dG Master: selected 2dG timeframes AND all ADR/ATR/SMA thresholds
+bool master_2dG = combined_2dG and pass_all
+
+// ========================================================================= //
+// 4. ADVANCED RS RATING ENGINE (SEED BASED)
+// ========================================================================= //
+n63  = 63
+n126 = 126
+n189 = 189
+n252 = 252
+allowReplay = false
+
+perfTicker63  = s_c / s_c[n63]
+perfTicker126 = s_c / s_c[n126]
+perfTicker189 = s_c / s_c[n189]
+perfTicker252 = s_c / s_c[n252]
+
+perfComp63  = benchCloseDa / benchCloseDa[n63]
+perfComp126 = benchCloseDa / benchCloseDa[n126]
+perfComp189 = benchCloseDa / benchCloseDa[n189]
+perfComp252 = benchCloseDa / benchCloseDa[n252]
+
+float rs_stock = 0.4 * perfTicker63 + 0.2 * perfTicker126 + 0.2 * perfTicker189 + 0.2 * perfTicker252
+float rs_ref   = 0.4 * perfComp63   + 0.2 * perfComp126   + 0.2 * perfComp189   + 0.2 * perfComp252
+
+float totalRsScore  = rs_stock / rs_ref * 100
+float totalRsRating = -1
+
+// Request 5: Seed
+curveRsPerf = request.seed('seed_fred6725_rs_rating', 'RSRATING', close)
+delta = ta.barssince(na(curveRsPerf) != true)
+
+var array<float> different_values = array.new_float(7)
+var int counter = 0
+
+float first = 0
+float scnd = 0
+float thrd = 0
+float frth = 0
+float ffth = 0
+float sxth = 0
+float svth = 0
+
+if not allowReplay
+    for i = delta to 34 + delta by 1
+        close_value = nz(curveRsPerf[i])
+        if not array.includes(different_values, close_value) and counter < 7 and close_value != 0
+            array.set(different_values, counter, close_value)
+            counter := counter + 1
+
+    first := array.get(different_values, 0)
+    scnd  := array.get(different_values, 1)
+    thrd  := array.get(different_values, 2)
+    frth  := array.get(different_values, 3)
+    ffth  := array.get(different_values, 4)
+    sxth  := array.get(different_values, 5)
+    svth  := array.get(different_values, 6)
+
+if totalRsScore >= first
+    totalRsRating := 99
+if totalRsScore <= svth
+    totalRsRating := 1
+
+f_attributePercentile(t_score, tallerPerf, smallerPerf, rangeUp, rangeDn, weight) =>
+    sum = t_score + (t_score - smallerPerf) * weight
+    if sum > tallerPerf - 1
+        sum := tallerPerf - 1
+    k1 = smallerPerf / rangeDn
+    k2 = (tallerPerf - 1) / rangeUp
+    k3 = (k1 - k2) / (tallerPerf - 1 - smallerPerf)
+    RsRating = sum / (k1 - k3 * (t_score - smallerPerf))
+    if RsRating > rangeUp
+        RsRating := rangeUp
+    if RsRating < rangeDn
+        RsRating := rangeDn
+    RsRating
+
+if totalRsScore < first and totalRsScore >= scnd
+    totalRsRating := f_attributePercentile(totalRsScore, first, scnd, 98, 90, 0.33)
+if totalRsScore < scnd and totalRsScore >= thrd
+    totalRsRating := f_attributePercentile(totalRsScore, scnd, thrd, 89, 70, 2.1)
+if totalRsScore < thrd and totalRsScore >= frth
+    totalRsRating := f_attributePercentile(totalRsScore, thrd, frth, 69, 50, 0)
+if totalRsScore < frth and totalRsScore >= ffth
+    totalRsRating := f_attributePercentile(totalRsScore, frth, ffth, 49, 30, 0)
+if totalRsScore < ffth and totalRsScore >= sxth
+    totalRsRating := f_attributePercentile(totalRsScore, ffth, sxth, 29, 10, 0)
+if totalRsScore < sxth and totalRsScore >= svth
+    totalRsRating := f_attributePercentile(totalRsScore, sxth, svth, 9, 2, 0)
+
+for i = 0 to 6 by 1
+    if nz(array.get(different_values, i)) == 0 and not allowReplay
+        totalRsRating := -1
+
+rs_pass = totalRsRating >= rsFilterLevel
+
+// ========================================================================= //
+// 5. COMBINED CONDITIONS
+// ========================================================================= //
+bull_aligned = ftfc_bull and in_force_up and (not use_rs_rating or rs_pass)
+bear_aligned = ftfc_bear and in_force_down
+
+is_bull_combo = combo == "1-3 Bull Rev" or combo == "212 Bull Rev" or combo == "22 Bull Rev" or combo == "312 Bull Rev" or combo == "322 Bull Rev" or combo == "122 Bull Rev" or combo == "2222 Bull RJ" or combo == "212 Bull MM" or combo == "222 Bull"
+is_bear_combo = combo == "1-3 Bear Rev" or combo == "212 Bear Rev" or combo == "22 Bear Rev" or combo == "312 Bear Rev" or combo == "322 Bear Rev" or combo == "122 Bear Rev" or combo == "2222 Bear RJ" or combo == "212 Bear MM" or combo == "222 Bear"
+
+// NEW sniper: any selected 2dG + D/W/M FTFC bull + Weekly In Force + RS + ADR/ATR/SMA filters
+sniper_2dG_full = master_2dG and ftfc_bull and in_force_up and rs_pass
+// NEW sniper: any selected 2dG + RS only
+sniper_2dG_rs   = master_2dG and rs_pass
+
+// ========================================================================= //
+// 6. SCREENER PLOTS (55 plots, under the 64 limit)
+// ========================================================================= //
+// --- 2dG (D / W / M) ---
+plot(valid and master_2dG ? 1 : 0,     title="Screen: 2dG Master (Filtered)",  display=display.none)
+plot(valid and combined_2dG ? 1 : 0,   title="Screen: 2dG Combined (Raw)",     display=display.none)
+plot(valid and is_2dG_D ? 1 : 0,       title="Screen: Daily 2dG (Raw)",        display=display.none)
+plot(valid and is_2dG_W ? 1 : 0,       title="Screen: Weekly 2dG (Raw)",       display=display.none)
+plot(valid and is_2dG_M ? 1 : 0,       title="Screen: Monthly 2dG (Raw)",      display=display.none)
+plot(valid and is_2dG_D and pass_all ? 1 : 0, title="Screen: Daily 2dG (Filtered)",   display=display.none)
+plot(valid and is_2dG_W and pass_all ? 1 : 0, title="Screen: Weekly 2dG (Filtered)",  display=display.none)
+plot(valid and is_2dG_M and pass_all ? 1 : 0, title="Screen: Monthly 2dG (Filtered)", display=display.none)
+plot(hit_count,                        title="2dG TF Count",                   display=display.none, precision=0)
+
+// --- 2uR mirror (D / W / M) ---
+plot(valid and is_2uR_D ? 1 : 0,       title="Screen: Daily 2uR (Raw)",        display=display.none)
+plot(valid and is_2uR_W ? 1 : 0,       title="Screen: Weekly 2uR (Raw)",       display=display.none)
+plot(valid and is_2uR_M ? 1 : 0,       title="Screen: Monthly 2uR (Raw)",      display=display.none)
+
+// --- RS + FTFC + In Force ---
+plot(totalRsRating, title="RS Rating Value", display=display.none)
+plot(valid and bull_aligned ? 1 : 0,   title="Screen: Bullish D/W/M FTFC + Weekly In Force Up",   display=display.none)
+plot(valid and bear_aligned ? 1 : 0,   title="Screen: Bearish D/W/M FTFC + Weekly In Force Down", display=display.none)
+plot(valid and ftfc_bull ? 1 : 0,      title="Filter: FTFC Bullish (D, W, M Green)", display=display.none)
+plot(valid and ftfc_bear ? 1 : 0,      title="Filter: FTFC Bearish (D, W, M Red)",   display=display.none)
+plot(valid and in_force_up ? 1 : 0,    title="Filter: Weekly In Force Up (Above Prev Weekly High)",  display=display.none)
+plot(valid and in_force_down ? 1 : 0,  title="Filter: Weekly In Force Down (Below Prev Weekly Low)", display=display.none)
+
+// --- Daily 1 / 3 bars ---
+plot(valid and bar_type == "1" ? 1 : 0, title="Screen: 1 Bar (Inside)",  display=display.none)
+plot(valid and bar_type == "3" ? 1 : 0, title="Screen: 3 Bar (Outside)", display=display.none)
+
+// --- Combos ---
+plot(valid and combo == "1-3 Bull Rev" ? 1 : 0, title="Screen: 1-3 Bull Rev", display=display.none)
+plot(valid and combo == "212 Bull Rev" ? 1 : 0, title="Screen: 212 Bull Rev", display=display.none)
+plot(valid and combo == "212 Bear Rev" ? 1 : 0, title="Screen: 212 Bear Rev", display=display.none)
+plot(valid and combo == "22 Bull Rev" ? 1 : 0,  title="Screen: 22 Bull Rev",  display=display.none)
+plot(valid and combo == "22 Bear Rev" ? 1 : 0,  title="Screen: 22 Bear Rev",  display=display.none)
+plot(valid and combo == "312 Bull Rev" ? 1 : 0, title="Screen: 312 Bull Rev", display=display.none)
+plot(valid and combo == "312 Bear Rev" ? 1 : 0, title="Screen: 312 Bear Rev", display=display.none)
+plot(valid and combo == "322 Bull Rev" ? 1 : 0, title="Screen: 322 Bull Rev", display=display.none)
+plot(valid and combo == "322 Bear Rev" ? 1 : 0, title="Screen: 322 Bear Rev", display=display.none)
+plot(valid and combo == "122 Bull Rev" ? 1 : 0, title="Screen: 122 Bull Rev", display=display.none)
+plot(valid and combo == "122 Bear Rev" ? 1 : 0, title="Screen: 122 Bear Rev", display=display.none)
+plot(valid and combo == "2222 Bull RJ" ? 1 : 0, title="Screen: 2222 Bull RJ", display=display.none)
+plot(valid and combo == "2222 Bear RJ" ? 1 : 0, title="Screen: 2222 Bear RJ", display=display.none)
+
+// --- Master groups ---
+plot(valid and is_bull_combo ? 1 : 0, title="Screen: ANY Bullish Combo", display=display.none)
+plot(valid and is_bear_combo ? 1 : 0, title="Screen: ANY Bearish Combo", display=display.none)
+
+// --- Sniper filters ---
+plot(valid and is_bull_combo and ftfc_bull and in_force_up ? 1 : 0, title="SNIPER: Bullish Combo + D/W/M FTFC + Weekly In Force", display=display.none)
+plot(valid and is_bear_combo and ftfc_bear and in_force_down ? 1 : 0, title="SNIPER: Bearish Combo + D/W/M FTFC + Weekly In Force", display=display.none)
+plot(valid and is_2dG_D and ftfc_bull ? 1 : 0, title="SNIPER: 2dG Bar + Bullish D/W/M FTFC", display=display.none)
+plot(valid and is_2uR_D and ftfc_bear ? 1 : 0, title="SNIPER: 2uR Bar + Bearish D/W/M FTFC", display=display.none)
+plot(valid and sniper_2dG_full ? 1 : 0, title="SNIPER+: 2dG Master + FTFC + Weekly In Force + RS", display=display.none)
+plot(valid and sniper_2dG_rs ? 1 : 0,   title="SNIPER+: 2dG Master + RS Rating", display=display.none)
+
+// --- Metrics ---
+plot(adrp,            title="ADR%",          display=display.none, precision=2)
+plot(atrp,            title="ATR%",          display=display.none, precision=2)
+plot(sma50_daily,     title="SMA 50",        display=display.none, precision=2)
+plot(sma200_daily,    title="SMA 200",       display=display.none, precision=2)
+plot(atr14_pct,       title="ATR 14d%",      display=display.none, precision=2)
+plot(xfrom50,         title="xATR From 50",  display=display.none, precision=2)
+plot(pct_from_lod,    title="%ATR from LoD", display=display.none, precision=2)
+plot(relvol_pct,      title="RelVol 10D %",  display=display.none, precision=2)
+plot(rs14_spy,        title="RS14/SPY %",    display=display.none, precision=2)
+plot(pct_from_pdh,    title="%HoD vs Prior", display=display.none, precision=2)
+plot(change_pct,      title="Change %",      display=display.none, precision=2)
+plot(change_open_pct, title="Change Open %", display=display.none, precision=2)
+plot(mm_score,        title="Minervini x/8", display=display.none, precision=0)
+
+// ========================================================================= //
+// 7. ALERTS
+// ========================================================================= //
+alertcondition(valid and bull_aligned, title="Alert: Bullish D/W/M FTFC + Weekly In Force Up (+ RS)", message="[Strat Screener] Bullish D/W/M FTFC + Weekly In Force Up on {{ticker}}")
+alertcondition(valid and bear_aligned, title="Alert: Bearish D/W/M FTFC + Weekly In Force Down", message="[Strat Screener] Bearish D/W/M FTFC + Weekly In Force Down on {{ticker}}")
+alertcondition(valid and master_2dG, title="Alert: 2dG Master (Filtered)", message="[Strat Screener] 2dG setup on {{ticker}}")
+alertcondition(valid and sniper_2dG_full, title="Alert: SNIPER+ 2dG + FTFC + In Force + RS", message="[Strat Screener] SNIPER+ 2dG + FTFC + Weekly In Force + RS on {{ticker}}")
