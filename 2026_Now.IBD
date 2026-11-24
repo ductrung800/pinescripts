@@ -1,0 +1,1719 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © ATraderNotes
+
+//@version=6
+indicator("IBD Market School + Market Pulse v7.0 · Unified Market Authority", shorttitle="IBD-MS + MP v7", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ===========================
+// INPUT SETTINGS
+// ===========================
+// Candle Customization
+ibdStyleCandles = input.bool(false, title = 'IBD-style Candles',  inline = 'Candles',   display = display.none)
+usePrevClose = input.bool(false, "Color bars based on previous close",  display = display.none)
+upColor      = input.color(#2736e9, "Up-Bar Color",   display = display.none)
+downColor    = input.color(#de32ae,  "Down-Bar Color",  display = display.none)
+
+
+//------------------ CANDLE COLOR LOGIC ---------------------//
+// This section determines the candle color based on the relationship between the open and close prices.
+isUp = usePrevClose ? (close >= close[1]) : (close >= open)
+
+// ── PLOT CROSS BARS ───────────────────────────────────────────────────────────
+plotbar(
+     open  = close,        // left tick
+     high  = high,         // wick top
+     low   = low,          // wick bottom
+     close = close,        // right tick
+     color = ibdStyleCandles ? (isUp ? upColor : downColor) : na
+     )
+
+// General Settings
+tooltip_mode = input.string("Simple", "Tooltip Display Mode", options=["Simple", "Detailed", "Market Analysis"])
+alert_type = input.string("On Close", "Alert Type", options=["On Close", "Real-Time"])
+show_ibd_candles = input.bool(false, "IBD-style Candles")
+color_on_prev_close = input.bool(true, "Color Based on Previous Close")
+
+// Market Exposure Table Settings
+table_layout = input.string("Basic (2 Columns)", "Layout Options", options=["Hide Table", "Basic (2 Columns)", "Detailed (2 Columns with Signals)", "Stacked (1 Column, Compact)"])
+table_theme = input.string("Auto", "Table Theme", options=["Auto", "Light", "Dark"])
+table_text_size_input = input.string("Small", "Table Text Size", options=["Tiny", "Small", "Normal", "Large", "Auto"])
+table_position_input = input.string("Top Right", "Table Position", options=["Top Left", "Top Center", "Top Right", "Middle Left", "Middle Center", "Middle Right", "Bottom Left", "Bottom Center", "Bottom Right"])
+market_display_mode = input.string("Clean", "Chart Display Mode", options=["Clean", "Detailed", "Audit"])
+show_trading_wisdom = input.bool(true, "Show Trading Wisdom")
+
+groupPower = "Power Trend Risk Controls"
+
+power_trend_max_dd = input.int(
+     2, "Maximum Active DDs for Operational ON",
+     minval=0, maxval=10,
+     tooltip="The structural Power Trend may remain active, but the displayed status becomes PAUSED above this DD count.",
+     group=groupPower)
+
+pause_power_on_buy_switch_off = input.bool(
+     true, "Pause When Buy Switch Is OFF",
+     group=groupPower)
+
+pause_power_on_pulse_weakness = input.bool(
+     true, "Pause When Market Pulse Is Defensive",
+     tooltip="Pauses operational Power Trend when Market Pulse is Distribution or Deceleration.",
+     group=groupPower)
+
+pause_power_on_atr_risk = input.bool(
+     true, "Pause on ATR Extension / Top Stall",
+     tooltip="Pauses aggressive sizing when extension risk or a recent top-stall warning is active.",
+     group=groupPower)
+
+show_raw_power_trend = input.bool(
+     false, "Show Raw Power Trend in Table",
+     tooltip="Adds the underlying structural Power Trend state to the description while operational status remains the primary value.",
+     group=groupPower)
+
+groupRally = "Rally Attempt Quality"
+
+rally_fragile_buffer_pct = input.float(
+     1.0, "Fragile Buffer Above Rally Low %",
+     minval=0.1, maxval=5.0, step=0.1,
+     tooltip="The rally is marked FRAGILE when price closes within this percentage above the Rally Day 1 low.",
+     group=groupRally)
+
+rally_weak_down_streak = input.int(
+     2, "Down Days for WEAK Status",
+     minval=1, maxval=5,
+     tooltip="Consecutive down closes that downgrade an intact rally attempt to WEAK.",
+     group=groupRally)
+
+require_positive_rally_progress_for_ftd = input.bool(
+     false, "Require Close Above Day 1 Close for FTD",
+     tooltip="Optional stricter filter. The standard lifecycle remains intact, but an FTD is accepted only after the rally has made positive closing progress from Day 1.",
+     group=groupRally)
+
+groupFTD = "Follow-Through Day"
+
+ftd_rally_start_mode = input.string("Reference Style", "Rally Day 1 Detection",
+     options=["Reference Style", "Any Up Day"],
+     tooltip="Reference Style anchors Day 1 to a local correction low. The low day is Day 1 when it closes in the upper half; otherwise the next up day starts the rally.",
+     group=groupFTD)
+ftd_local_low_lookback = input.int(20, "Local Low Lookback", minval=5, maxval=100, group=groupFTD)
+ftd_min_gain_mode = input.string("Fixed", "FTD Gain Threshold",
+     options=["Fixed", "Volatility Adaptive"], group=groupFTD)
+ftd_fixed_gain = input.float(1.5, "Fixed Minimum Gain %", minval=0.5, maxval=5.0, step=0.05, group=groupFTD)
+ftd_earliest_day = input.int(4, "Earliest FTD Day", minval=2, maxval=10, group=groupFTD)
+ftd_optimal_last_day = input.int(7, "Optimal Window Ends", minval=4, maxval=15, group=groupFTD)
+ftd_latest_day = input.int(
+     0, "Latest FTD Day (0 = No Limit)",
+     minval=0, maxval=60,
+     tooltip="The linked script publishes no hard final day. Zero keeps the window open after Day 4; later signals are graded LATE.",
+     group=groupFTD)
+
+rally_refresh_after = input.int(
+     10, "Allow Fresh Local-Low Reset After Day",
+     minval=4, maxval=60,
+     tooltip="After this age, a fresh local correction low can begin a new rally cycle even if the ancient Day 1 low was never undercut.",
+     group=groupFTD)
+
+rally_absolute_max_age = input.int(
+     40, "Maximum Rally Attempt Age",
+     minval=10, maxval=120,
+     tooltip="Safety reset preventing stale rally attempts such as Day 400.",
+     group=groupFTD)
+
+ftd_require_higher_volume = input.bool(true, "Require Volume Above Prior Day", group=groupFTD)
+show_ftd_marker = input.bool(true, "Show Independent FTD Marker", group=groupFTD)
+show_ftd_row = input.bool(true, "Show FTD Row in Table", group=groupFTD)
+
+// Buy Signals Settings
+buy_signals_display = input.string("Show Selected Signals", "Buy Signals Display", options=["Show Selected Signals", "Hide All", "Compact Signals"])
+b1_auto_volatility = input.bool(true, "B1 Auto Volatility")
+b1_manual_volatility = input.float(1.245, "B1 Manual Volatility", minval=0.1, maxval=5.0)
+index_rise_6pct = input.bool(true, "Index Rise 6% from DD & SD")
+index_rise_threshold = input.float(6.0, "Index Rise Threshold (%)", minval=1.0, maxval=20.0)
+
+// Individual Buy Signal Toggles 
+show_b1 = input.bool(true, "B1: Follow-Through Day", tooltip="B1: Follow-Through Day - Buy on initial FTD (Day 4+ of Rally) with volume higher than previous day")
+show_b2 = input.bool(true, "B2: Additional Follow-Through", tooltip="B2: Additional Follow-Through - Buy on additional FTDs within 25 days of the initial B1 signal")
+show_b3 = input.bool(true, "B3: Low Above EMA21", tooltip="B3: Low Above EMA21 - Buy when the intraday low is at or above the 21-day EMA on an up or flat day")
+show_b4 = input.bool(true, "B4: High Above EMA21", tooltip="B4: High Above EMA21 - Buy when the intraday high reaches or exceeds the 21-day EMA on an up day")
+show_b5 = input.bool(true, "B5: Living Above EMA21", tooltip="B5: Living Above EMA21 - Triggers when index closes above the 21-day EMA for five consecutive days after a B3")
+show_b7 = input.bool(true, "B7: Accumulation Day", tooltip="B7: Accumulation Day - Market up 0.2%+ with volume higher than the previous day")
+show_b8 = input.bool(true, "B8: Higher High", tooltip="B8: Higher High - Index closes above a major pivot high after a rally")
+show_b9 = input.bool(true, "B9: Upside Reversal", tooltip="B9: Upside Reversal - Index closes above a recent S11 downside reversal's intraday high within two trading days")
+show_hvwppu = input.bool(true, "HVWPPU: Heavy Volume Without Further Price Progress Up", tooltip="HVWPPU: Rare institutional distribution pattern indicating major selling. Price stalls despite a 50%+ volume surge.")
+
+// Sell Signals Settings
+sell_signals_display = input.string("Show Selected Signals", "Sell Signals Display", options=["Show Selected Signals", "Hide All", "Compact Signals"])
+
+// Individual Sell Signal Toggles 
+show_s1 = input.bool(true, "S1: Follow-Through Day Undercut", tooltip="S1: Follow-Through Day Undercut - Sell if the low of the initial FTD is broken")
+show_s2 = input.bool(true, "S2: Failed Rally Attempt", tooltip="S2: Failed Rally Attempt - A rally attempt fails to produce a valid Follow-Through Day")
+show_s2ml = input.bool(true, "S2ml: Minor Low Undercut", tooltip="S2ml: Minor Low Undercut - The index undercuts a minor low established during a rally attempt")
+show_s3 = input.bool(true, "S3: Full Distribution Minus One", tooltip="S3: Full Distribution Minus One - Market is one Distribution Day away from a critical full count")
+show_s4 = input.bool(true, "S4: Full Distribution", tooltip="S4: Full Distribution - The Distribution Day count reaches a high threshold, indicating heavy institutional selling")
+show_s5 = input.bool(true, "S5: Break Below EMA21", tooltip="S5: Break Below EMA21 - Sell when the close is 0.2% or more below the 21-day EMA")
+show_s6 = input.bool(true, "S6: Overdue Break Below EMA21", tooltip="S6: Overdue Break Below EMA21 - Sell if index closes 0.2%+ below EMA21 after 30 days since last B3 without an S5")
+show_s7 = input.bool(true, "S7: Trending Below EMA21", tooltip="S7: Trending Below EMA21 - Index persistently remains below the 21-day EMA")
+show_s8 = input.bool(true, "S8: Living Below EMA21", tooltip="S8: Living Below EMA21 - Consecutive closes confirming resistance at the 21-day EMA")
+show_s9 = input.bool(true, "S9: Break Below 50-Day MA", tooltip="S9: Break Below 50-Day MA - Sell when the index closes below its major 50-day moving average support")
+show_s10 = input.bool(true, "S10: Bad Break", tooltip="S10: Bad Break - Sharp, high-volume drop breaking key structural support")
+show_s11 = input.bool(true, "S11: Downside Reversal", tooltip="S11: Downside Reversal - New high within 13 weeks, close in bottom quartile, down day with 1.75%+ spread")
+show_s12 = input.bool(true, "S12: Lower Low", tooltip="S12: Lower Low - Index establishes a new lower low, confirming a downtrend")
+show_s13 = input.bool(true, "S13: Distribution Cluster", tooltip="S13: Distribution Cluster - Multiple distribution days occurring rapidly within a tight window")
+show_s14 = input.bool(true, "S14: Break Below Higher High", tooltip="S14: Break Below Higher High - Index fails to hold a breakout and falls back below the previous higher high")
+show_cb = input.bool(false, "CB: Circuit Breaker", tooltip="CB: Circuit Breaker - Major structural decline (e.g., 5% below 50-day MA intraday or 10% from high) triggering defensive positioning")
+show_dd = input.bool(true, "Distribution Days (DD)", tooltip="DD: Distribution Day - Market down 0.20%+ with volume higher than the previous day")
+show_sd = input.bool(true, "Stalling Days (SD)", tooltip="SD: Stalling Day - Small gains stall out and close in the lower half of the range on heavy volume")
+
+// Line Settings
+show_buy_lines = input.bool(true, "Show Buy Signal Lines")
+show_sell_lines = input.bool(true, "Show Sell Signal Lines")
+
+// Moving Averages Inputs
+show_ema9 = input.bool(true, "Show EMA9")
+show_ema21 = input.bool(true, "Show EMA21")
+show_sma50 = input.bool(true, "Show SMA50")
+show_sma200 = input.bool(true, "Show SMA200")
+
+// ===========================
+// MARKET PULSE INTEGRATION
+// ===========================
+groupPulse = "Market Pulse Integration"
+
+use_market_pulse = input.bool(true, "Enable Market Pulse", group=groupPulse)
+
+pulse_mode = input.string(
+     "Confirmation",
+     "Integration Mode",
+     options=["Information Only", "Confirmation", "Exposure Modifier"],
+     tooltip="Information Only: display pulse without changing IBD logic. Confirmation: grade IBD signals using pulse. Exposure Modifier: pulse also modifies exposure increases.",
+     group=groupPulse)
+
+pulse_baseline_type = input.string("VMA", "Adaptive Baseline", options=["VMA", "VIDYA"], group=groupPulse)
+pulse_baseline_length = input.int(10, "Adaptive Baseline Length", minval=2, group=groupPulse)
+pulse_fast_length = input.int(8, "Fast VWMA", minval=2, group=groupPulse)
+pulse_mid_length = input.int(21, "Middle VWMA", minval=3, group=groupPulse)
+pulse_slow_length = input.int(34, "Slow VWMA", minval=5, group=groupPulse)
+pulse_adx_length = input.int(14, "ADX Length", minval=5, group=groupPulse)
+pulse_minimum_adx = input.float(15.0, "Minimum ADX", minval=5, maxval=50, step=0.5, group=groupPulse)
+pulse_slope_lookback = input.int(3, "Slope Lookback", minval=1, maxval=15, group=groupPulse)
+pulse_min_stack_atr = input.float(0.08, "Minimum VWMA Stack Width (ATR)", minval=0.0, maxval=2.0, step=0.01, group=groupPulse)
+pulse_require_stack_expansion = input.bool(true, "Require VWMA Stack Expansion", group=groupPulse)
+pulse_rsi_length = input.int(14, "RSI Length", minval=2, group=groupPulse)
+pulse_minimum_rsi = input.float(50.0, "Minimum Bullish RSI", minval=40, maxval=80, step=1, group=groupPulse)
+pulse_short_sensitivity = input.string("Balanced", "Deceleration Sensitivity", options=["Early", "Balanced", "Strict"], group=groupPulse)
+pulse_use_rs = input.bool(false, "Use Benchmark RS in Pulse Quality", group=groupPulse)
+pulse_benchmark = input.symbol("AMEX:SPY", "Pulse RS Benchmark", group=groupPulse)
+pulse_rs_lookback = input.int(50, "Pulse RS Lookback", minval=10, maxval=252, group=groupPulse)
+pulse_minimum_rs = input.float(0.0, "Minimum Relative Performance %", step=0.5, group=groupPulse)
+show_pulse_signals = input.bool(true, "Show MP+ / MP− Signals", group=groupPulse)
+show_pulse_baseline = input.bool(false, "Show Pulse Baseline", group=groupPulse)
+show_pulse_vwmas = input.bool(false, "Show Pulse VWMA Stack", group=groupPulse)
+show_pulse_in_table = input.bool(true, "Show Pulse in Market Table", group=groupPulse)
+
+// ===========================
+// INSTITUTIONAL DAY TRACKERS
+// ===========================
+groupInstitutional = "Institutional Day Trackers"
+
+dd_decline_threshold = input.float(
+     0.20, "DD Minimum Decline %", minval=0.05, maxval=2.0, step=0.05,
+     tooltip="Standard IBD-style Distribution Day threshold.",
+     group=groupInstitutional)
+
+institutional_day_life = input.int(
+     25, "DD / AD Valid Trading Days", minval=5, maxval=60,
+     tooltip="Each qualifying day remains active for this many trading sessions.",
+     group=groupInstitutional)
+
+dd_removal_rise = input.float(
+     5.0, "DD Removal Rally %", minval=1.0, maxval=15.0, step=0.5,
+     tooltip="A Distribution Day is removed early when the index closes this far above that DD close.",
+     group=groupInstitutional)
+
+accumulation_mode = input.string(
+     "Market School B7", "Accumulation Day Definition",
+     options=["Simple 0.20%", "Market School B7"],
+     tooltip="Simple: +0.20%, volume above prior day, upper-quartile close. Market School B7: volatility-adjusted FTD-size gain, volume above prior day, above EMA21, upper-quartile close, excluding B1/B2.",
+     group=groupInstitutional)
+
+ad_simple_threshold = input.float(
+     0.20, "Simple AD Minimum Gain %", minval=0.05, maxval=3.0, step=0.05,
+     group=groupInstitutional)
+
+show_heavy_dd_count = input.bool(
+     true, "Show Heavy DD Count in Table",
+     tooltip="Heavy DD retains the original stricter rule: decline plus volume above 115% of the 20-day average.",
+     group=groupInstitutional)
+
+// ===========================
+// ATR EXTENSION RISK OVERLAY
+// ===========================
+groupAtrRisk = "ATR Extension Risk Overlay"
+
+use_atr_risk_overlay = input.bool(
+     true, "Use ATR Extension in Portfolio Posture",
+     tooltip="Keeps Market Pulse as the trend state, but prevents aggressive execution when the index is stretched far above SMA50.",
+     group=groupAtrRisk)
+
+atr_risk_length = input.int(14, "ATR Length", minval=2, group=groupAtrRisk)
+
+atr_safe_threshold = input.float(
+     4.0, "Safe / Stretch Boundary", minval=1.0, maxval=10.0, step=0.25,
+     tooltip="Below this level, extension does not restrict normal execution.",
+     group=groupAtrRisk)
+
+atr_extended_threshold = input.float(
+     7.0, "Extended Boundary", minval=2.0, maxval=15.0, step=0.25,
+     tooltip="At or above this level, prioritize profit protection and avoid fresh chasing.",
+     group=groupAtrRisk)
+
+top_stall_caution_bars = input.int(
+     5, "Top-Stall Caution Persistence", minval=1, maxval=15,
+     tooltip="How many sessions a stalling day remains a posture downgrade when it occurs in the stretch/extended zone.",
+     group=groupAtrRisk)
+
+show_atr_risk_in_table = input.bool(true, "Show ATR Extension Row", group=groupAtrRisk)
+show_atr_risk_marker = input.bool(true, "Show Top-Stall Risk Marker", group=groupAtrRisk)
+
+// ===========================
+// EARNINGS GAP DETECTOR SETTINGS
+// ===========================
+show_gap_labels = input.bool(true, "Show Buyable Gap-Ups", group="Gap Detector")
+lookbackAvgVol = input.int(20, 'Volume Avg Period', minval = 1, group="Gap Detector")
+minGapPct = input.float(5.0, 'Min Gap %', step = 0.1, group="Gap Detector")
+labelOffsetYpct = input.float(2.0, 'Label Y-Offset %', step = 0.1, group="Gap Detector")
+labelOffsetYpctPEG = input.float(3.5, 'Label Y-Offset for PEG %', group="Gap Detector")
+
+gap_theme = input.string('Dark', title='Gap Label Theme', options=['Dark', 'Light'], group="Gap Detector")
+// Dark Theme: Dark blue background, white text. Light Theme: Light blue background, black text.
+labelBgColor = gap_theme == 'Dark' ? color.new(color.rgb(20, 40, 80), 20) : color.new(color.rgb(220, 235, 255), 20)
+labelTxtColor = gap_theme == 'Dark' ? color.white : color.black
+
+
+// ===========================
+// DISPLAY HELPERS
+// ===========================
+getTablePosition(string value) =>
+    switch value
+        "Top Left" => position.top_left
+        "Top Center" => position.top_center
+        "Top Right" => position.top_right
+        "Middle Left" => position.middle_left
+        "Middle Center" => position.middle_center
+        "Middle Right" => position.middle_right
+        "Bottom Left" => position.bottom_left
+        "Bottom Center" => position.bottom_center
+        => position.bottom_right
+
+table_position = getTablePosition(table_position_input)
+is_dark_table = table_theme == "Dark" ? true : table_theme == "Light" ? false : color.r(chart.bg_color) + color.g(chart.bg_color) + color.b(chart.bg_color) < 384
+
+// ===========================
+// VARIABLES AND CALCULATIONS
+// ===========================
+
+ema9 = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+sma50 = ta.sma(close, 50)
+sma200 = ta.sma(close, 200)
+
+// ===========================
+// MARKET PULSE CALCULATIONS · UNIFIED QUALITY ENGINE
+// ===========================
+pulseVma(float source, int length) =>
+    vi = math.abs(ta.cmo(source, length)) / 100.0
+    alpha = 2.0 / (length + 1.0) * vi
+    float result = na
+    result := na(result[1]) ? source : alpha * source + (1.0 - alpha) * result[1]
+    result
+
+pulseVidya(float source, int fastLen, int slowLen) =>
+    fastDev = ta.stdev(source, fastLen)
+    slowDev = ta.stdev(source, slowLen)
+    ratio = not na(slowDev) and slowDev != 0.0 ? fastDev / slowDev : 0.0
+    alpha = math.min(1.0, 0.20 * ratio)
+    float result = na
+    result := na(result[1]) ? source : alpha * source + (1.0 - alpha) * result[1]
+    result
+
+pulse_baseline = pulse_baseline_type == "VMA" ? pulseVma(close, pulse_baseline_length) : pulseVidya(close, math.max(2, int(math.round(pulse_baseline_length / 3.0))), pulse_baseline_length)
+pulse_fast = ta.vwma(close, pulse_fast_length)
+pulse_mid = ta.vwma(close, pulse_mid_length)
+pulse_slow = ta.vwma(close, pulse_slow_length)
+pulse_atr = ta.atr(14)
+pulse_rsi = ta.rsi(close, pulse_rsi_length)
+[pulse_plus_di, pulse_minus_di, pulse_adx] = ta.dmi(pulse_adx_length, pulse_adx_length)
+
+pulse_baseline_rising = pulse_baseline > pulse_baseline[pulse_slope_lookback]
+pulse_baseline_falling = pulse_baseline < pulse_baseline[pulse_slope_lookback]
+pulse_slow_rising = pulse_slow > pulse_slow[pulse_slope_lookback]
+pulse_slow_falling = pulse_slow < pulse_slow[pulse_slope_lookback]
+pulse_trend_rising = sma50 > sma50[pulse_slope_lookback]
+pulse_trend_falling = sma50 < sma50[pulse_slope_lookback]
+
+pulse_bull_stack = pulse_fast > pulse_mid and pulse_mid > pulse_slow
+pulse_bear_stack = pulse_fast < pulse_mid and pulse_mid < pulse_slow
+pulse_bull_stack_width_atr = pulse_atr > 0 ? (pulse_fast - pulse_slow) / pulse_atr : 0.0
+pulse_bear_stack_width_atr = pulse_atr > 0 ? (pulse_slow - pulse_fast) / pulse_atr : 0.0
+pulse_bull_stack_expanding = pulse_bull_stack_width_atr >= pulse_min_stack_atr and (not pulse_require_stack_expansion or pulse_bull_stack_width_atr > pulse_bull_stack_width_atr[1])
+pulse_bear_stack_expanding = pulse_bear_stack_width_atr >= pulse_min_stack_atr and (not pulse_require_stack_expansion or pulse_bear_stack_width_atr > pulse_bear_stack_width_atr[1])
+
+pulse_benchmark_close = request.security(pulse_benchmark, timeframe.period, close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+pulse_stock_return = not na(close[pulse_rs_lookback]) and close[pulse_rs_lookback] != 0 ? close / close[pulse_rs_lookback] - 1.0 : na
+pulse_benchmark_return = not na(pulse_benchmark_close[pulse_rs_lookback]) and pulse_benchmark_close[pulse_rs_lookback] != 0 ? pulse_benchmark_close / pulse_benchmark_close[pulse_rs_lookback] - 1.0 : na
+pulse_relative_performance = not na(pulse_stock_return) and not na(pulse_benchmark_return) ? (pulse_stock_return - pulse_benchmark_return) * 100.0 : na
+pulse_rs_line = not na(pulse_benchmark_close) and pulse_benchmark_close != 0 ? close / pulse_benchmark_close : na
+pulse_rs_rising = pulse_rs_line > pulse_rs_line[pulse_slope_lookback]
+pulse_rs_pass = not pulse_use_rs or (not na(pulse_relative_performance) and pulse_relative_performance >= pulse_minimum_rs and pulse_rs_rising)
+
+pulse_raw_acceleration = pulse_bull_stack and close >= pulse_baseline
+pulse_raw_deceleration = pulse_bear_stack and close <= pulse_baseline
+pulse_acceleration = pulse_raw_acceleration and pulse_baseline_rising and pulse_slow_rising and pulse_bull_stack_expanding and close > sma50 and pulse_trend_rising and pulse_plus_di > pulse_minus_di and pulse_adx >= pulse_minimum_adx and pulse_rsi >= pulse_minimum_rsi and pulse_rs_pass
+pulse_early_deceleration = close < pulse_baseline and pulse_fast < pulse_mid and close < ema21 and pulse_minus_di > pulse_plus_di and pulse_rsi < 50
+pulse_balanced_deceleration = pulse_early_deceleration and pulse_baseline_falling and pulse_adx >= math.max(10.0, pulse_minimum_adx - 3.0)
+pulse_strict_deceleration = pulse_raw_deceleration and pulse_baseline_falling and pulse_slow_falling and pulse_bear_stack_expanding and close < sma50 and pulse_trend_falling and pulse_minus_di > pulse_plus_di and pulse_adx >= pulse_minimum_adx and pulse_rsi <= 100.0 - pulse_minimum_rsi
+pulse_deceleration = pulse_short_sensitivity == "Early" ? pulse_early_deceleration : pulse_short_sensitivity == "Strict" ? pulse_strict_deceleration : pulse_balanced_deceleration
+pulse_accumulation = not pulse_acceleration and not pulse_deceleration and close >= pulse_baseline and pulse_baseline_rising
+pulse_distribution = not pulse_acceleration and not pulse_deceleration and close < pulse_baseline
+
+pulse_bull_price_confirm = close > open and close > close[1] and high >= high[1]
+pulse_bear_price_confirm = close < open and close < close[1] and low <= low[1]
+
+var bool pulse_accel_printed = false
+var bool pulse_decel_printed = false
+pulse_accel_cycle_start = pulse_raw_acceleration and not pulse_raw_acceleration[1]
+pulse_decel_cycle_start = pulse_deceleration and not pulse_deceleration[1]
+
+if pulse_decel_cycle_start
+    pulse_accel_printed := false
+if pulse_accel_cycle_start
+    pulse_decel_printed := false
+
+pulse_enter_acceleration = pulse_acceleration and not pulse_accel_printed and pulse_bull_price_confirm
+pulse_enter_deceleration = pulse_deceleration and not pulse_decel_printed and pulse_bear_price_confirm
+
+if pulse_enter_acceleration
+    pulse_accel_printed := true
+if pulse_enter_deceleration
+    pulse_decel_printed := true
+
+pulse_regime = not use_market_pulse ? 0 : pulse_acceleration ? 2 : pulse_deceleration ? -2 : pulse_accumulation ? 1 : pulse_distribution ? -1 : 0
+pulse_name = pulse_regime == 2 ? "ACCELERATION" : pulse_regime == 1 ? "ACCUMULATION / PREP" : pulse_regime == -1 ? "DISTRIBUTION / CAUTION" : pulse_regime == -2 ? "DECELERATION" : "NEUTRAL"
+
+float pulse_quality = 0.0
+pulse_quality += close > pulse_baseline ? 10 : 0
+pulse_quality += pulse_baseline_rising ? 10 : 0
+pulse_quality += pulse_bull_stack ? 15 : 0
+pulse_quality += pulse_slow_rising ? 10 : 0
+pulse_quality += pulse_bull_stack_expanding ? 10 : 0
+pulse_quality += close > ema21 ? 5 : 0
+pulse_quality += close > sma50 ? 10 : 0
+pulse_quality += pulse_trend_rising ? 10 : 0
+pulse_quality += pulse_plus_di > pulse_minus_di and pulse_adx >= pulse_minimum_adx ? 10 : 0
+pulse_quality += pulse_rsi >= pulse_minimum_rsi ? 5 : 0
+pulse_quality += pulse_rs_pass ? 5 : 0
+pulse_quality := math.min(100.0, pulse_quality)
+pulse_quality_name = pulse_quality >= 85 ? "VERY STRONG" : pulse_quality >= 70 ? "STRONG" : pulse_quality >= 55 ? "CONSTRUCTIVE" : pulse_quality >= 40 ? "MIXED" : "WEAK"
+
+curr_volume = volume
+prev_volume = volume[1]
+
+volatility_200 = ta.stdev(math.log(close / close[1]), 200)
+ftd_threshold = b1_auto_volatility ? volatility_200 < 0.004 ? 0.7 : volatility_200 < 0.0055 ? 0.85 :volatility_200 < 0.01 ? 1.0 : 1.245 : b1_manual_volatility
+
+price_change = (close - close[1]) / close[1] * 100
+price_change_abs = math.abs(price_change)
+
+// Initialize Global Market State Variables early
+var int market_exposure = 0
+var bool buy_switch = false
+
+// --- Gap Detector Calculations ---
+trading_days_1m = 21   // approx 1 month trading days
+close_1m = request.security(syminfo.tickerid, 'D', close[trading_days_1m], lookahead=barmerge.lookahead_off)
+perf_1m = ((close - close_1m) / close_1m) * 100
+
+avgVol_gap = ta.sma(volume, lookbackAvgVol)
+gapPct = 100 * (open - close[1]) / close[1]
+priceChgPct_gap = 100 * (close - close[1]) / close[1]
+volumeChgPct_gap = avgVol_gap != 0 ? 100 * (volume - avgVol_gap) / avgVol_gap : na
+closeRangePct_gap = high - low != 0 ? 100 * (close - low) / (high - low) : na
+
+// Buyable Gap-Up Conditions
+smaVolume50_gap = ta.sma(volume, 50)
+smaPrice200_gap = ta.sma(close, 200)
+change1Day = (close - close[1]) / close[1] * 100
+
+gap_cond1 = smaVolume50_gap > 100000
+gap_cond2 = volume / smaVolume50_gap >= 1.5
+gap_cond3 = gapPct >= 1
+gap_cond4 = change1Day > gapPct
+gap_cond5 = close / smaPrice200_gap > 0
+
+// ✨ NEW: True Gap Condition (Today's Low must be strictly higher than Yesterday's High)
+gap_cond6 = low > high[1] 
+
+// ✨ UPDATE: Add gap_cond6 to the final requirement
+buyablegapup = gap_cond1 and gap_cond2 and gap_cond3 and gap_cond4 and gap_cond5 and gap_cond6
+
+// Standard Gap Candle Threshold
+volumeSpikeThreshold = 1.5 
+isGapCandle = math.abs(gapPct) >= minGapPct and volume >= avgVol_gap * volumeSpikeThreshold and perf_1m > 10 and close > high[1]
+
+// ===========================
+// SIGNAL DETECTION LOGIC
+// ===========================
+
+// --- Distribution, Accumulation and Stalling Days ---
+volume_ma_20 = ta.sma(volume, 20)
+
+// Standard DD: fixed decline threshold and volume above prior day.
+is_distribution_day =
+     price_change <= -dd_decline_threshold and
+     curr_volume > prev_volume
+
+// Original stricter condition retained as a separate informational metric.
+is_heavy_distribution_day =
+     price_change <= -dd_decline_threshold and
+     curr_volume > volume_ma_20 * 1.15
+
+day_range = high - low
+upper_quartile_close =
+     day_range > 0 and
+     close >= high - day_range * 0.25
+
+is_accumulation_day_simple =
+     price_change >= ad_simple_threshold and
+     curr_volume > prev_volume and
+     upper_quartile_close
+
+is_accumulation_day_b7_base =
+     price_change >= ftd_threshold and
+     curr_volume > prev_volume and
+     close > ema21 and
+     upper_quartile_close
+
+// Active DD lifecycle.
+var dd_bars = array.new_int()
+var dd_closes = array.new_float()
+
+if is_distribution_day
+    array.push(dd_bars, bar_index)
+    array.push(dd_closes, close)
+
+if array.size(dd_bars) > 0
+    for i = array.size(dd_bars) - 1 to 0
+        stored_bar = array.get(dd_bars, i)
+        stored_close = array.get(dd_closes, i)
+
+        expired_by_time = bar_index - stored_bar >= institutional_day_life
+        removed_by_rally = close >= stored_close * (1.0 + dd_removal_rise / 100.0)
+
+        if expired_by_time or removed_by_rally
+            array.remove(dd_bars, i)
+            array.remove(dd_closes, i)
+
+distribution_days_count = array.size(dd_bars)
+
+heavy_distribution_days_count =
+     int(math.sum(is_heavy_distribution_day ? 1 : 0, institutional_day_life))
+
+is_stalling_day =
+     price_change >= 0.0 and
+     price_change <= 0.4 and
+     curr_volume >= prev_volume * 0.95 and
+     close < (high + low) / 2
+
+// ===========================
+// ATR EXTENSION RISK CALCULATIONS
+// ===========================
+atr_risk = ta.atr(atr_risk_length)
+atrx_from_sma50 =
+     not na(sma50) and not na(atr_risk) and atr_risk > 0 ?
+     (close - sma50) / atr_risk :
+     na
+
+atr_extension_zone =
+     na(atrx_from_sma50) ? 0 :
+     atrx_from_sma50 >= atr_extended_threshold ? 2 :
+     atrx_from_sma50 >= atr_safe_threshold ? 1 :
+     atrx_from_sma50 >= 0 ? 0 :
+     -1
+
+atr_extension_name =
+     atr_extension_zone == 2 ? "EXTENDED" :
+     atr_extension_zone == 1 ? "STRETCH" :
+     atr_extension_zone == 0 ? "SAFE" :
+     "BELOW SMA50"
+
+// A stalling day is most important when price is already far above SMA50.
+top_stalling_day =
+     is_stalling_day and
+     atr_extension_zone >= 1
+
+bars_since_top_stall = ta.barssince(top_stalling_day)
+
+top_stall_caution =
+     not na(bars_since_top_stall) and
+     bars_since_top_stall <= top_stall_caution_bars
+
+// Persistent risk tiers used by the integrated posture.
+atr_risk_caution =
+     use_atr_risk_overlay and
+     (
+         atr_extension_zone == 1 or
+         top_stall_caution
+     )
+
+atr_risk_extreme =
+     use_atr_risk_overlay and
+     atr_extension_zone == 2
+
+// ==========================================
+// RALLY ATTEMPT LOGIC
+// ==========================================
+// Reference-style Day 1:
+// - a local correction low is identified;
+// - the low day becomes Day 1 when it closes in the upper half;
+// - otherwise the next up-close day becomes Day 1.
+// The attempt remains alive until the protected Day 1 low is undercut.
+
+var int rally_day_count = 0
+var float rally_low = na
+var float rally_day1_close = na
+var float rally_peak_close = na
+var int rally_down_streak = 0
+var bool pending_rally_low = false
+var float pending_rally_low_price = na
+var int pending_rally_low_bar = na
+
+bool is_up_day = close > close[1]
+
+local_low_now = low <= ta.lowest(low, ftd_local_low_lookback)
+bar_range = high - low
+close_in_upper_half = bar_range > 0 and close >= low + bar_range * 0.50
+
+reference_low_day1 = local_low_now and close_in_upper_half
+reference_next_day1 = pending_rally_low and is_up_day and low >= pending_rally_low_price
+any_up_day1 = is_up_day
+
+// A later correction can establish a fresh rally cycle without having to
+// undercut an ancient protected low.
+fresh_local_low_reset =
+     ftd_rally_start_mode == "Reference Style" and
+     rally_day_count >= rally_refresh_after and
+     local_low_now
+
+stale_rally_reset =
+     rally_day_count >= rally_absolute_max_age
+
+new_rally_day1 =
+     ftd_rally_start_mode == "Reference Style" ?
+     (reference_low_day1 or reference_next_day1) :
+     any_up_day1
+
+new_rally_protected_low =
+     reference_next_day1 ?
+     math.min(low, pending_rally_low_price) :
+     math.min(low, low[1])
+
+if buy_switch
+    rally_day_count := 0
+    rally_low := na
+    rally_day1_close := na
+    rally_peak_close := na
+    rally_down_streak := 0
+    pending_rally_low := false
+    pending_rally_low_price := na
+    pending_rally_low_bar := na
+else
+    if ftd_rally_start_mode == "Reference Style" and local_low_now and not close_in_upper_half
+        pending_rally_low := true
+        pending_rally_low_price := low
+        pending_rally_low_bar := bar_index
+
+    if pending_rally_low
+        if low < pending_rally_low_price or bar_index - pending_rally_low_bar > 3
+            pending_rally_low := false
+            pending_rally_low_price := na
+            pending_rally_low_bar := na
+
+    if rally_day_count == 0
+        if new_rally_day1
+            rally_day_count := 1
+            rally_low := new_rally_protected_low
+            rally_day1_close := close
+            rally_peak_close := close
+            rally_down_streak := 0
+            pending_rally_low := false
+            pending_rally_low_price := na
+            pending_rally_low_bar := na
+    else
+        // Refresh an old rally cycle when a new correction low develops.
+        if fresh_local_low_reset
+            if close_in_upper_half
+                rally_day_count := 1
+                rally_low := math.min(low, low[1])
+                rally_day1_close := close
+                rally_peak_close := close
+                rally_down_streak := 0
+                pending_rally_low := false
+                pending_rally_low_price := na
+                pending_rally_low_bar := na
+            else
+                // End the stale cycle and wait for the next up day.
+                rally_day_count := 0
+                rally_low := na
+                rally_day1_close := na
+                rally_peak_close := na
+                rally_down_streak := 0
+                pending_rally_low := true
+                pending_rally_low_price := low
+                pending_rally_low_bar := bar_index
+        else if stale_rally_reset
+            rally_day_count := 0
+            rally_low := na
+            rally_day1_close := na
+            rally_peak_close := na
+            rally_down_streak := 0
+        else if low < rally_low
+            if new_rally_day1
+                rally_day_count := 1
+                rally_low := new_rally_protected_low
+                rally_day1_close := close
+                rally_peak_close := close
+                rally_down_streak := 0
+            else
+                rally_day_count := 0
+                rally_low := na
+                rally_day1_close := na
+                rally_peak_close := na
+                rally_down_streak := 0
+        else
+            rally_day_count += 1
+            rally_peak_close := na(rally_peak_close) ? close : math.max(rally_peak_close, close)
+            rally_down_streak := close < close[1] ? rally_down_streak + 1 : 0
+
+rally_progress_pct =
+     rally_day_count > 0 and not na(rally_day1_close) ?
+     (close / rally_day1_close - 1.0) * 100.0 : na
+
+rally_low_buffer_pct =
+     rally_day_count > 0 and not na(rally_low) and rally_low > 0 ?
+     (close / rally_low - 1.0) * 100.0 : na
+
+rally_above_ema9 = close > ema9
+rally_above_ema21 = close > ema21
+
+rally_fragile =
+     rally_day_count > 0 and
+     rally_low_buffer_pct <= rally_fragile_buffer_pct
+
+rally_weak =
+     rally_day_count > 0 and
+     not rally_fragile and
+     (
+         rally_down_streak >= rally_weak_down_streak or
+         rally_progress_pct <= 0 or
+         not rally_above_ema9
+     )
+
+rally_healthy =
+     rally_day_count > 0 and
+     not rally_fragile and
+     not rally_weak and
+     rally_progress_pct > 0 and
+     rally_above_ema9
+
+rally_quality =
+     rally_day_count == 0 ? "NONE" :
+     rally_fragile ? "FRAGILE" :
+     rally_weak ? "WEAK" :
+     rally_healthy ? "HEALTHY" :
+     "MIXED"
+
+rally_quality_color =
+     rally_quality == "HEALTHY" ? color.green :
+     rally_quality == "MIXED" ? color.orange :
+     rally_quality == "WEAK" ? color.orange :
+     rally_quality == "FRAGILE" ? color.red :
+     color.red
+
+// ===========================
+// FOLLOW-THROUGH DAY LOGIC (B1)
+// ===========================
+ftd_gain_threshold =
+     ftd_min_gain_mode == "Fixed" ? ftd_fixed_gain : ftd_threshold
+
+ftd_volume_pass =
+     not ftd_require_higher_volume or curr_volume > prev_volume
+
+rally_progress_pass =
+     not require_positive_rally_progress_for_ftd or
+     (not na(rally_day1_close) and close > rally_day1_close)
+
+ftd_window_open =
+     rally_day_count >= ftd_earliest_day and
+     (
+         ftd_latest_day == 0 or
+         rally_day_count <= ftd_latest_day
+     )
+
+is_potential_ftd =
+     price_change >= ftd_gain_threshold and
+     ftd_volume_pass
+
+is_follow_through_day =
+     is_potential_ftd and
+     ftd_window_open and
+     rally_progress_pass and
+     not rally_fragile
+
+ftd_timing_grade =
+     not is_follow_through_day ? "WAITING" :
+     rally_day_count <= ftd_optimal_last_day ? "STRONG" :
+     "LATE"
+
+ftd_status =
+     is_follow_through_day ? "FTD · " + ftd_timing_grade :
+     rally_day_count == 0 ? "NO RALLY" :
+     rally_fragile ? "BLOCKED · FRAGILE" :
+     rally_day_count < ftd_earliest_day ? "WAIT · DAY " + str.tostring(rally_day_count) :
+     ftd_latest_day > 0 and rally_day_count > ftd_latest_day ? "WINDOW EXPIRED" :
+     "WINDOW OPEN"
+
+var int last_ftd_bar = na
+var int last_ftd_rally_day = na
+var float last_ftd_gain = na
+var string last_ftd_timing_grade = "—"
+var string last_ftd_pulse_grade = "—"
+
+if is_follow_through_day
+    last_ftd_bar := bar_index
+    last_ftd_rally_day := rally_day_count
+    last_ftd_gain := price_change
+    last_ftd_timing_grade := ftd_timing_grade
+    last_ftd_pulse_grade := pulse_regime == 2 ? "A" : pulse_regime >= 0 ? "B" : "C"
+
+bars_since_last_ftd = na(last_ftd_bar) ? na : bar_index - last_ftd_bar
+
+// Additional Follow-Through (B2)
+var float ftd_low = na
+var int days_since_ftd = 0
+if is_follow_through_day
+    ftd_low := low
+    days_since_ftd := 0
+else
+    days_since_ftd += 1
+
+is_b2 = not na(ftd_low) and days_since_ftd <= 25 and  price_change >= ftd_threshold and curr_volume > prev_volume and  close > ftd_low
+
+// Final B7 excludes B1/B2 to avoid double-classifying the same session.
+is_accumulation_day_b7 =
+     is_accumulation_day_b7_base and
+     not is_follow_through_day and
+     not is_b2
+
+is_accumulation_day =
+     accumulation_mode == "Simple 0.20%" ?
+     is_accumulation_day_simple :
+     is_accumulation_day_b7
+
+// Active AD lifecycle. No DD-style 5% purge is applied.
+var ad_bars = array.new_int()
+
+if is_accumulation_day
+    array.push(ad_bars, bar_index)
+
+if array.size(ad_bars) > 0
+    for i = array.size(ad_bars) - 1 to 0
+        stored_bar = array.get(ad_bars, i)
+        expired_by_time = bar_index - stored_bar >= institutional_day_life
+
+        if expired_by_time
+            array.remove(ad_bars, i)
+
+accumulation_days_count = array.size(ad_bars)
+
+// --- Other Signals ---
+is_s9 = ta.crossunder(close, sma50)
+is_hvwppu = price_change >= -0.1 and price_change <= 0.4 and curr_volume > prev_volume * 1.5 and close <= (high + low) / 2
+
+var float highest_since_ftd = na
+if is_follow_through_day
+    highest_since_ftd := high
+else if not na(highest_since_ftd)
+    highest_since_ftd := math.max(highest_since_ftd, high)
+
+is_circuit_breaker = not na(highest_since_ftd) and close < highest_since_ftd * 0.90 and   low < sma50 * 0.95
+
+// ===========================
+// CORRECTED MARKET EXPOSURE & BUY SWITCH LOGIC
+// ===========================
+
+// Power Trend States
+var int power_trend_floor = 0
+var int power_trend_max = 5
+recentHigh = ta.highest(close, 100)
+
+cond1 = ta.lowest(low > ema21 ? 1 : 0, 10) == 1
+cond2 = ta.lowest(ema21 > sma50 ? 1 : 0, 5) == 1
+cond3 = sma50 > sma50[1]
+cond4 = close > close[1]
+
+var bool power_trend_state = false
+
+start = not power_trend_state and cond1 and cond2 and cond3 and cond4
+end1 = power_trend_state and ta.crossover(sma50, ema21)
+end2 = power_trend_state and close < 0.9 * recentHigh and close < sma50
+
+end = end1 or end2
+
+if start
+    power_trend_state := true
+    
+if end
+    power_trend_state := false
+
+plotshape(market_display_mode == "Audit" and start, color=color.new(color.green, 0), style=shape.triangleup, location=location.belowbar, text="PowerTrend Raw ON", size=size.small, textcolor=color.green)
+plotshape(market_display_mode == "Audit" and end, color=color.new(color.red, 0), style=shape.triangledown, location=location.abovebar, text="PowerTrend Raw OFF", size=size.small, textcolor=color.red)
+
+// 1. Check if there is a valid reason to turn the switch ON (Day 4+ FTDs only)
+bars_since_ftd = ta.barssince(is_follow_through_day)
+bars_since_b2 = ta.barssince(is_b2)
+hold_period = 10
+
+buy_switch_state = (bars_since_ftd >= 0 and bars_since_ftd <= hold_period) or 
+                   (bars_since_b2 >= 0 and bars_since_b2 <= hold_period)
+
+if buy_switch_state
+    buy_switch := true
+
+    if use_market_pulse and pulse_mode == "Exposure Modifier"
+        pulse_exposure_add =
+             pulse_regime == 2 ? 2 :
+             pulse_regime == 1 ? 1 :
+             0
+
+        market_exposure := math.min(market_exposure + pulse_exposure_add, power_trend_max)
+    else
+        // Corrected: previous code used min(..., 0), which prevented exposure rising above zero.
+        market_exposure := math.min(market_exposure + 2, power_trend_max)
+
+// 2. APPLY STRICT IBD OFF RULES (Master Override)
+ibd_hard_off = distribution_days_count >= 4 or close < ema21
+
+pulse_confirmed_hard_off =
+     use_market_pulse and
+     pulse_mode != "Information Only" and
+     pulse_regime == -2 and
+     (
+         is_s9 or
+         distribution_days_count >= 3
+     )
+
+if ibd_hard_off or pulse_confirmed_hard_off
+    market_exposure := math.max(market_exposure - 2, 0)
+    buy_switch := false
+
+// ===========================
+// OPERATIONAL POWER TREND
+// ===========================
+// power_trend_state is the raw structural condition.
+// power_trend_operational is the risk-adjusted permission to size aggressively.
+
+power_pause_buy_switch =
+     pause_power_on_buy_switch_off and
+     not buy_switch
+
+power_pause_dd =
+     distribution_days_count > power_trend_max_dd
+
+power_pause_pulse =
+     pause_power_on_pulse_weakness and
+     pulse_regime <= -1
+
+power_pause_atr =
+     pause_power_on_atr_risk and
+     (
+         atr_risk_extreme or
+         top_stall_caution
+     )
+
+power_trend_paused =
+     power_trend_state and
+     (
+         power_pause_buy_switch or
+         power_pause_dd or
+         power_pause_pulse or
+         power_pause_atr
+     )
+
+power_trend_operational =
+     power_trend_state and
+     not power_trend_paused
+
+power_trend_status =
+     power_trend_operational ? "ON" :
+     power_trend_paused ? "PAUSED" :
+     "OFF"
+
+power_trend_reason =
+     not power_trend_state ? "Structural Power Trend inactive." :
+     power_pause_buy_switch ? "Paused: Buy Switch is OFF." :
+     power_pause_dd ? "Paused: active DD pressure exceeds limit." :
+     power_pause_pulse ? "Paused: Market Pulse is defensive." :
+     power_pause_atr and atr_risk_extreme ? "Paused: index is ATR-extended." :
+     power_pause_atr and top_stall_caution ? "Paused: recent top-stall risk." :
+     "Operational: trend and risk conditions aligned."
+
+power_operational_start =
+     power_trend_operational and
+     not power_trend_operational[1]
+
+power_operational_pause =
+     power_trend_paused and
+     not power_trend_paused[1]
+
+plotshape(
+     market_display_mode != "Clean" and power_operational_start,
+     title="Operational Power Trend ON",
+     color=color.green,
+     style=shape.labelup,
+     location=location.belowbar,
+     text="PT ON",
+     size=size.tiny,
+     textcolor=color.white)
+
+plotshape(
+     market_display_mode != "Clean" and power_operational_pause,
+     title="Operational Power Trend PAUSED",
+     color=color.orange,
+     style=shape.labeldown,
+     location=location.abovebar,
+     text="PT PAUSE",
+     size=size.tiny,
+     textcolor=color.black)
+
+// ===========================
+// SUBSEQUENT SIGNALS (Dependent on Reset logic)
+// ===========================
+is_s5 = ta.crossunder(close , ema21)  
+
+var bool b3_b4_generated = false
+var bool b3_occurred = false
+var bool b4_occurred = false
+var int bars_since_b3_b4 = 0
+
+if is_s5
+    b3_b4_generated := false
+    b3_occurred := false
+    b4_occurred := false
+    bars_since_b3_b4 := 0
+
+is_b3 = not b3_b4_generated and low >= ema21 and price_change >= 0 and buy_switch 
+
+var int days_since_last_b3 = na
+var bool s5_occurred_since_b3 = false
+
+if is_b3
+    days_since_last_b3 := 0
+    s5_occurred_since_b3 := false
+else if not na(days_since_last_b3)
+    days_since_last_b3 += 1
+
+if is_s5
+    s5_occurred_since_b3 := true
+
+is_s6_overdue_break_below_ema21 = not na(days_since_last_b3) and days_since_last_b3 >= 30 and  not s5_occurred_since_b3 and close < ema21 * 0.998       
+
+if is_s6_overdue_break_below_ema21
+    days_since_last_b3 := na
+    s5_occurred_since_b3 := false
+
+is_b4 = not b3_b4_generated and high >= ema21 and  price_change > 0 and buy_switch   
+    
+if is_b4  
+    b3_b4_generated := true
+    b4_occurred := true
+    bars_since_b3_b4 := 0
+
+if b3_b4_generated and not (is_b3 or is_b4)
+    bars_since_b3_b4 += 1
+
+var int consecutive_days_above_ema21 = 0
+var bool b5_eligible = false
+
+if close > ema21
+    consecutive_days_above_ema21 += 1
+else
+    consecutive_days_above_ema21 := 0
+
+is_b5_living_above_ema21 = b3_occurred and  consecutive_days_above_ema21 >= 5 and consecutive_days_above_ema21 % 5 == 0 and  close > ema21 and close > close[1]   
+
+// BOS Settings (B8)
+color CLEAR = #ffffff00
+swingSize = input.int(3, 'Swing Length', tooltip = 'The number of left and right bars checked when searching for a swing point. Higher value = less swing points plotted and lower value = more swing points plotted.')
+bosConfType = input.string('Candle Close', 'BOS Confirmation', ['Candle Close', 'Wicks'], tooltip = 'Choose whether candle close/wick above previous swing point counts as a BOS.')
+choch = input.bool(false, 'Show CHoCH', tooltip = 'Renames the first counter trend BOS to CHoCH')
+showSwing = input.bool(false, 'Show Swing Points', tooltip = 'Show or hide HH, LH, HL, LL')
+bosColor = input.color(color.rgb(112, 114, 119), 'Color', group = 'BOS Settings')
+bosStyle = input.string('Dashed', 'Line Style', ['Solid', 'Dashed', 'Dotted'], group = 'BOS Settings')
+bosWidth = input.int(1, 'Width', minval = 1, group = 'BOS Settings')
+
+lineStyle(x) =>
+    switch x
+        'Solid' => line.style_solid
+        'Dashed' => line.style_dashed
+        'Dotted' => line.style_dotted
+
+pivHi = ta.pivothigh(high, swingSize, swingSize)
+pivLo = ta.pivotlow(low, swingSize, swingSize)
+
+var float prevHigh = na
+var float prevLow = na
+var int prevHighIndex = na
+var int prevLowIndex = na
+var bool highActive = false
+var bool lowActive = false
+bool hh = false
+bool lh = false
+bool hl = false
+bool ll = false
+var int prevSwing = 0
+
+if not na(pivHi)
+    if pivHi >= prevHigh
+        hh := true
+        prevSwing := 2
+    else
+        lh := true
+        prevSwing := 1
+    prevHigh := pivHi
+    highActive := true
+    prevHighIndex := bar_index - swingSize
+
+if not na(pivLo)
+    if pivLo >= prevLow
+        hl := true
+        prevSwing := -1
+    else
+        ll := true
+        prevSwing := -2
+    prevLow := pivLo
+    lowActive := true
+    prevLowIndex := bar_index - swingSize
+
+bool highBroken = false
+bool lowBroken = false
+var int prevBreakoutDir = 0
+
+float highSrc = bosConfType == 'Candle Close' ? close : high
+float lowSrc = bosConfType == 'Candle Close' ? close : low
+
+if highSrc > prevHigh and highActive  
+    highBroken := true
+    highActive := false
+if lowSrc < prevLow and lowActive
+    lowBroken := true
+    lowActive := false
+
+if hh and showSwing
+    label.new(bar_index - swingSize, pivHi, 'HH', color = CLEAR, style = label.style_label_down, textcolor = chart.fg_color)
+if lh and showSwing
+    label.new(bar_index - swingSize, pivHi, 'LH', color = CLEAR, style = label.style_label_down, textcolor = chart.fg_color)
+if hl and showSwing
+    label.new(bar_index - swingSize, pivLo, 'HL', color = CLEAR, style = label.style_label_up, textcolor = chart.fg_color)
+if ll and showSwing
+    label.new(bar_index - swingSize, pivLo, 'LL', color = CLEAR, style = label.style_label_up, textcolor = chart.fg_color)
+
+if highBroken
+    line.new(prevHighIndex, prevHigh, bar_index, prevHigh, color = bosColor, style = lineStyle(bosStyle), width = bosWidth)
+    label.new(math.floor(bar_index - (bar_index - prevHighIndex) / 2), prevHigh, prevBreakoutDir == -1 and choch ? 'CHoCH' : 'BOS', color = CLEAR, textcolor = bosColor, size = size.tiny)
+    prevBreakoutDir := 1
+if lowBroken
+    line.new(prevLowIndex, prevLow, bar_index, prevLow, color = bosColor, style = lineStyle(bosStyle), width = bosWidth)
+    label.new(math.floor(bar_index - (bar_index - prevLowIndex) / 2), prevLow, prevBreakoutDir == 1 and choch ? 'CHoCH' : 'BOS', color = CLEAR, textcolor = bosColor, style = label.style_label_up, size = size.tiny)
+    prevBreakoutDir := -1
+
+is_b8_higher_high = highBroken and close > sma50         
+
+is_s11_downside_reversal = high >= ta.highest(high, 65)[1] and    close <= (low + (high - low) * 0.25) and  price_change < 0 and  ((high - low) / low) * 100 >= 1.75   
+
+var float s11_reversal_high = na
+var int bars_since_s11 = na
+var bool s11_active = false
+
+if is_s11_downside_reversal
+    s11_reversal_high := high
+    bars_since_s11 := 0
+    s11_active := true
+else if s11_active
+    bars_since_s11 += 1
+    if bars_since_s11 > 3
+        s11_active := false
+        s11_reversal_high := na
+        bars_since_s11 := na
+
+is_b9_reversal_buy_back = s11_active and not na(s11_reversal_high) and  bars_since_s11 >= 1 and bars_since_s11 <= 3 and  close > s11_reversal_high 
+
+if is_b9_reversal_buy_back
+    s11_active := false
+    bars_since_s11 := na
+
+// ===========================
+// IBD + MARKET PULSE SYNTHESIS
+// ===========================
+
+ftd_pulse_strong =
+     is_follow_through_day and
+     pulse_regime == 2
+
+ftd_pulse_normal =
+     is_follow_through_day and
+     pulse_regime >= 0 and
+     pulse_regime < 2
+
+ftd_pulse_weak =
+     is_follow_through_day and
+     pulse_regime < 0
+
+ftd_pulse_grade =
+     ftd_pulse_strong ? "A — Pulse Confirmed" :
+     ftd_pulse_normal ? "B — Valid, Await Pulse" :
+     ftd_pulse_weak ? "C — Internals Diverging" :
+     "—"
+
+pulse_confirmed_s5 = is_s5 and pulse_regime <= -1
+pulse_confirmed_s9 = is_s9 and pulse_regime == -2
+pulse_distribution_pressure = distribution_days_count >= 3 and pulse_regime <= -1
+pulse_major_defense =
+     pulse_regime == -2 and
+     (
+         is_s9 or
+         is_s11_downside_reversal or
+         distribution_days_count >= 4
+     )
+
+institutional_net = accumulation_days_count - distribution_days_count
+institutional_state = institutional_net >= 3 ? "BUYING DOMINANT" : institutional_net >= 1 ? "BUYING EDGE" : institutional_net <= -4 ? "SELLING DOMINANT" : institutional_net <= -2 ? "SELLING EDGE" : "BALANCED"
+
+allow_new_exposure = buy_switch and pulse_regime >= 1 and not atr_risk_extreme and not top_stall_caution and distribution_days_count < 4
+allow_full_exposure = buy_switch and power_trend_operational and pulse_regime == 2 and pulse_quality >= 70 and distribution_days_count <= 2 and not atr_risk_caution
+freeze_exposure = buy_switch and (pulse_regime == -1 or atr_risk_caution or distribution_days_count >= 3)
+reduce_exposure = pulse_regime == -2 or pulse_major_defense or close < sma50
+
+market_permission = pulse_major_defense or (not buy_switch and pulse_regime == -2) ? "CASH" : pulse_regime == -2 or close < sma50 ? "DEFENSIVE" : buy_switch and (pulse_regime == -1 or distribution_days_count >= 3 or top_stall_caution) ? "CAUTION" : buy_switch and power_trend_operational and pulse_regime == 2 and pulse_quality >= 70 and not atr_risk_caution ? "OFFENSIVE" : buy_switch and pulse_regime >= 1 ? "SELECTIVE" : not buy_switch and rally_day_count > 0 ? "CAUTION" : "CASH"
+
+today_action = pulse_major_defense or (pulse_regime == -2 and (distribution_days_count >= 3 or close < sma50)) ? "REDUCE RISK" : not buy_switch and pulse_regime <= -1 ? "CASH / WAIT" : atr_risk_extreme and pulse_regime >= 1 ? "PROTECT PROFITS" : top_stall_caution or (atr_risk_caution and pulse_regime >= 1) ? "NO NEW CHASES" : market_permission == "OFFENSIVE" ? "ADD RISK" : market_permission == "SELECTIVE" ? "SELECTIVE ENTRY" : not buy_switch and pulse_regime >= 1 ? "WAIT FOR FTD" : buy_switch ? "HOLD / MANAGE" : "CASH / WAIT"
+
+authority_why = market_permission == "OFFENSIVE" ? "Buy Switch, operational Power Trend and strong Pulse are aligned." : market_permission == "SELECTIVE" ? "Confirmed market, but conditions favor selective low-risk entries." : market_permission == "CAUTION" ? "Risk evidence is rising despite an intact or developing trend." : market_permission == "DEFENSIVE" ? "Trend/structure damage overrides offensive conditions." : "Market permission is not available for new risk."
+authority_caution = pulse_major_defense ? "Pulse deterioration and IBD sell evidence are aligned." : distribution_days_count >= 4 ? str.tostring(distribution_days_count) + " active DDs show heavy institutional pressure." : atr_risk_extreme ? str.tostring(atrx_from_sma50, "#.1") + "x ATR above SMA50 is too extended to chase." : top_stall_caution ? "Recent stalling while extended raises top-risk." : pulse_regime == -1 ? "Market Pulse is in Distribution / Caution." : close < sma50 ? "Price is below SMA50." : "No major authority-level caution."
+authority_next = today_action == "ADD RISK" ? "Favor quality breakouts and controlled adds; avoid weak leadership." : today_action == "SELECTIVE ENTRY" ? "Demand clean structure, volume confirmation and acceptable extension." : today_action == "NO NEW CHASES" ? "Wait for reset toward EMA21/SMA50 or renewed low-risk setup." : today_action == "PROTECT PROFITS" ? "Trail winners and wait for extension to normalize." : today_action == "REDUCE RISK" ? "Cut weak positions and wait for rally/FTD plus Pulse repair." : today_action == "WAIT FOR FTD" ? "Track Rally Attempt and wait for valid FTD confirmation." : today_action == "HOLD / MANAGE" ? "Manage existing positions; require fresh confirmation before adding." : "Preserve cash until market permission improves."
+
+market_permission_color = market_permission == "OFFENSIVE" ? color.green : market_permission == "SELECTIVE" ? color.lime : market_permission == "CAUTION" ? color.orange : color.red
+market_permission_offensive = market_permission == "OFFENSIVE"
+today_reduce_risk = today_action == "REDUCE RISK"
+
+// ===========================
+// VISUAL ELEMENTS
+// ===========================
+ 
+
+plot(show_ema9 ? ema9 : na, "EMA9", color=color.red, linewidth=2)
+plot(show_ema21 ? ema21 : na, "EMA21", color=color.green, linewidth=1)
+plot(show_sma50 ? sma50 : na, "SMA50", color=color.rgb(66, 0, 0), linewidth=1)
+plot(show_sma200 ? sma200 : na, "SMA200", color=color.fuchsia, linewidth=1)
+
+if show_ftd_marker and is_follow_through_day
+    label.new(
+         bar_index,
+         low,
+         "FTD\nD" + str.tostring(rally_day_count) + " · " + ftd_timing_grade,
+         color=ftd_timing_grade == "STRONG" ? color.green : color.new(color.green, 25),
+         textcolor=color.white,
+         style=label.style_label_up,
+         size=size.small,
+         tooltip="Follow-Through Day: +" + str.tostring(price_change, "#.2") + "%, qualifying volume, Rally Day " + str.tostring(rally_day_count) + ".")
+
+pulse_baseline_color =
+     pulse_regime == 2 ? color.green :
+     pulse_regime == -2 ? color.red :
+     pulse_regime == 1 ? color.orange :
+     pulse_regime == -1 ? color.maroon :
+     color.gray
+
+plot(show_pulse_baseline and use_market_pulse ? pulse_baseline : na,
+     "Market Pulse Baseline", color=pulse_baseline_color, linewidth=3)
+
+plot(show_pulse_vwmas and use_market_pulse ? pulse_fast : na,
+     "Pulse Fast VWMA", color=color.aqua)
+plot(show_pulse_vwmas and use_market_pulse ? pulse_mid : na,
+     "Pulse Mid VWMA", color=color.fuchsia)
+plot(show_pulse_vwmas and use_market_pulse ? pulse_slow : na,
+     "Pulse Slow VWMA", color=color.yellow)
+
+if show_pulse_signals and use_market_pulse and pulse_enter_acceleration
+    label.new(
+         bar_index,
+         low,
+         "MP+\nACCEL",
+         color=color.green,
+         textcolor=color.white,
+         style=label.style_label_up,
+         size=size.tiny,
+         tooltip="Market Pulse acceleration: internal trend expansion supports the IBD market framework.")
+
+if show_pulse_signals and use_market_pulse and pulse_enter_deceleration
+    label.new(
+         bar_index,
+         high,
+         "MP−\nDECEL",
+         color=color.red,
+         textcolor=color.white,
+         style=label.style_label_down,
+         size=size.tiny,
+         tooltip="Market Pulse deceleration: internal deterioration confirms a more defensive posture.")
+
+if show_atr_risk_marker and top_stalling_day
+    label.new(
+         bar_index,
+         high,
+         "STALL+\n" + str.tostring(atrx_from_sma50, "#.1") + "x ATR",
+         color=color.orange,
+         textcolor=color.black,
+         style=label.style_label_down,
+         size=size.tiny,
+         tooltip="Stalling day while the index is stretched above SMA50. Block fresh aggressive exposure and protect gains.")
+
+if buy_signals_display != "Hide All"
+    if show_b1 and is_follow_through_day
+        label.new(bar_index, low*0.99, "B1", color=color.green, textcolor=color.white, style=label.style_label_up, size=size.tiny, tooltip="B1: Follow-Through Day\nPulse Grade: " + ftd_pulse_grade)
+    if show_b2 and is_b2
+        label.new(bar_index, low*0.98, "B2", color=color.green, textcolor=color.white, style=label.style_label_up, size=size.tiny,tooltip="B2: Additional Follow-Through - Buy on additional FTDs within 25 days")
+    if show_b3 and is_b3
+        label.new(bar_index, high, "B3", color=color.green, textcolor=color.white,  style=label.style_label_down, size=size.tiny, tooltip="B3: Low Above EMA21 - Buy when intraday low is at or above EMA21")
+    if show_b4 and is_b4
+        label.new(bar_index, high, "B4", color=color.green, textcolor=color.white,  style=label.style_label_down, size=size.tiny, tooltip="B4: Trending Above EMA21 - This follows a prior B1 (Follow-Through Day) or B3 (Low Above EMA21) signal and signals the market is showing sustained strength beyond the initial rally")
+    if show_b5 and is_b5_living_above_ema21
+        label.new(bar_index, low, "B5", color=color.green, textcolor=color.white,  style=label.style_label_up, size=size.tiny, tooltip="B5: Close above the 21-day EMA for five consecutive days after a B3")
+    if show_b7 and is_accumulation_day
+        label.new(bar_index, low*0.97, "B7", color=color.green, textcolor=color.white, style=label.style_label_up, size=size.tiny, tooltip="B7: Accumulation Day - Up 0.2%+ with volume higher than previous day")
+    if show_b8 and is_b8_higher_high
+        label.new(bar_index, high, "B8", color=color.green, textcolor=color.white,style=label.style_label_down, size=size.tiny, tooltip= "B8: Higher High – Index closes above major pivot high after rally")
+    if show_b9 and is_b9_reversal_buy_back
+        label.new(bar_index, high, "B9", color=color.green, textcolor=color.white, style=label.style_label_down, size=size.tiny, tooltip="B9: Upside Reversal - After a downside reversal (S11), if the index closes above that reversal’s intraday high within two trading days")
+
+if sell_signals_display != "Hide All"
+    if show_s5 and is_s5
+        label.new(bar_index, high*1.003, "S5", color=color.red, textcolor=color.white,  style=label.style_label_down,  size=size.tiny, tooltip="S5: Break Below EMA21 - Sell when close is 0.2% or more below EMA21")
+    if show_s6 and is_s6_overdue_break_below_ema21
+        label.new(bar_index, high*1.008, "S6", color=color.new(color.red, 0), textcolor=color.white, style=label.style_label_down, size=size.small, tooltip= "S6: Overdue Break Below EMA21") 
+    if show_s9 and is_s9
+        label.new(bar_index, high*1.02, "S9", color=color.red, textcolor=color.white, style=label.style_label_down, size=size.tiny,  tooltip="S9: Break Below 50-Day MA - Sell when close is below 50-day MA")
+    if show_s11 and is_s11_downside_reversal
+        label.new(bar_index, high, "S11", color=color.red, textcolor=color.white, style=label.style_label_down, size=size.tiny, tooltip="S11: Downside Reversal - New high within 13 weeks, close in bottom quartile, down day with 1.75%+ spread.  ")  
+    if show_cb and is_circuit_breaker
+        label.new(bar_index, high*1.02, "CB", color=color.maroon, textcolor=color.white,  style=label.style_label_down, size=size.tiny, tooltip="CB: Circuit Breaker - Major decline triggers defensive positioning")
+    if show_hvwppu and is_hvwppu
+        label.new(bar_index, high * 1.025, "H", color=color.new(color.yellow, 0), textcolor=color.black,  style=label.style_diamond, size=size.small, tooltip="HVWPPU: Major institutional distribution detected")
+
+// Distribution and Stalling Day markers
+if show_dd and is_distribution_day
+    label.new(bar_index, high * 1.02, "DD", color=color.red, textcolor=color.red, style=label.style_arrowdown, size=size.tiny,tooltip="Distribution Day: Market down 0.20%+ with volume higher than previous day")
+
+if show_sd and is_stalling_day
+    label.new(bar_index, high * 1.02, "SD", color=color.orange, textcolor=color.white,  style=label.style_square, size=size.tiny, tooltip="Stalling Day: Small gains stall on heavy volume")
+
+// --- Earnings Gap Labels ---
+if show_gap_labels and (isGapCandle or buyablegapup)
+    yOffset = (high - low) * (labelOffsetYpct / 100)
+    yOffsetPEG = (high - low) * (labelOffsetYpctPEG / 100)
+
+    txt = str.format('Gap: {0,number,#.##}%\nPrice Δ: {1,number,#.##}%\nVol Δ: {2,number,#.##}%\nClose Range: {3,number,#.##}%', gapPct, priceChgPct_gap, volumeChgPct_gap, closeRangePct_gap)
+    
+    // We don't use label.delete() here so that historical gaps remain visible on the chart
+    label.new(bar_index, high + yOffset, txt, style = label.style_label_down, color = labelBgColor, textcolor = labelTxtColor, size = size.normal)
+    //label.new(bar_index, low - yOffsetPEG, 'GAP', style = label.style_label_up, color = labelBgColor, textcolor = labelTxtColor, size = size.normal)
+
+alertcondition(buyablegapup, title = 'Buyable Gap Up')
+alertcondition(isGapCandle, title = 'Standard Gap Candle')
+
+// ===========================
+// MARKET STATUS TABLE (WITH RALLY ATTEMPT ROW)
+// ===========================
+
+// Theme Colors Setup
+color t_bg = is_dark_table ? color.rgb(30, 30, 30) : color.white
+color t_header_bg = is_dark_table ? color.rgb(45, 50, 56) : color.rgb(240, 244, 248)
+color t_border = is_dark_table ? color.rgb(80, 80, 80) : color.rgb(200, 200, 200)
+color t_text = is_dark_table ? color.rgb(220, 220, 220) : color.rgb(50, 50, 50)
+color t_text_muted = is_dark_table ? color.rgb(150, 160, 170) : color.rgb(120, 130, 140)
+
+// Text Size Setup
+string t_size = table_text_size_input == "Tiny" ? size.tiny : table_text_size_input == "Small" ? size.small : table_text_size_input == "Normal" ? size.normal : table_text_size_input == "Large" ? size.large : size.auto
+
+if table_layout != "Hide Table"
+    // Instantiate 3-column table
+    var table status_table = table.new(table_position, 3, 30, bgcolor=t_bg, border_color=t_border, border_width=1, frame_color=t_border, frame_width=1)
+    
+    if barstate.islast
+        table.set_position(status_table, table_position)
+        table.clear(status_table, 0, 0)
+        
+        // --- Header Row 1 ---
+        table.cell(status_table, 0, 0, "", bgcolor=t_header_bg)
+        table.cell(status_table, 1, 0, "— Unified Market Authority —", text_color=t_text_muted, text_size=t_size, bgcolor=t_header_bg, text_halign=text.align_center)
+        table.cell(status_table, 2, 0, "", bgcolor=t_header_bg)
+        
+        // Row 1: Buy Switch 
+        string switch_desc = buy_switch ? "Uptrend confirmed. Buy quality breakouts." : "Under pressure. Play defense, hold cash."
+        table.cell(status_table, 0, 1, "Buy Switch", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+        table.cell(status_table, 1, 1, buy_switch ? "🟢 ON" : "🔴 OFF", text_color=buy_switch ? color.green : color.red, text_size=t_size, text_halign=text.align_center)
+        table.cell(status_table, 2, 1, switch_desc, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+        
+        // Row 2: Rally Attempt Age + Quality
+        string rally_text = ""
+        string rally_desc = ""
+        color rally_color = rally_quality_color
+
+        if buy_switch
+            rally_text := "—"
+            rally_desc := "Confirmed uptrend active; rally counter reset."
+            rally_color := t_text_muted
+        else if rally_day_count == 0
+            rally_text := "Day 0"
+            rally_desc := "No intact rally attempt. Seeking a new Day 1."
+            rally_color := color.red
+        else
+            rally_text := "Day " + str.tostring(rally_day_count) + " · " + rally_quality
+
+            string window_text =
+                 rally_day_count >= 4 and not rally_fragile ?
+                 "FTD window open." :
+                 rally_day_count >= 4 ?
+                 "FTD age reached, but attempt is fragile." :
+                 "FTD window not open yet."
+
+            string progress_text =
+                 " Progress " + str.tostring(rally_progress_pct, "#.1") + "% from Day 1."
+
+            rally_desc :=
+                 rally_quality == "HEALTHY" ?
+                     window_text + progress_text :
+                 rally_quality == "WEAK" ?
+                     "Attempt remains technically intact, but momentum is weakening." + progress_text :
+                 rally_quality == "FRAGILE" ?
+                     "Near the protected rally low. Failure risk is high." + progress_text :
+                     window_text + progress_text
+
+        table.cell(status_table, 0, 2, "Rally Attempt", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+        table.cell(status_table, 1, 2, rally_text, text_color=rally_color, text_size=t_size, text_halign=text.align_center)
+        table.cell(status_table, 2, 2, rally_desc, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+        // Row 3: Operational Power Trend
+        string pt_value =
+             power_trend_operational ? "🟢 ON" :
+             power_trend_paused ? "🟠 PAUSED" :
+             "🔴 OFF"
+
+        color pt_color =
+             power_trend_operational ? color.green :
+             power_trend_paused ? color.orange :
+             color.red
+
+        string pt_desc =
+             power_trend_reason +
+             (show_raw_power_trend ? " Raw state: " + (power_trend_state ? "ON." : "OFF.") : "")
+
+        table.cell(status_table, 0, 3, "Power Trend", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+        table.cell(status_table, 1, 3, pt_value, text_color=pt_color, text_size=t_size, text_halign=text.align_center)
+        table.cell(status_table, 2, 3, pt_desc, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+        // Row 4: Active Distribution Days
+        string dist_desc = distribution_days_count >= 6 ? "Critical selling. High risk of breakdown." : distribution_days_count >= 4 ? "Elevated selling pressure. Reduce risk." : distribution_days_count >= 3 ? "Selling pressure building. Be cautious." : "Normal range. Low active distribution."
+        table.cell(status_table, 0, 4, "IBD DDs", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+        table.cell(status_table, 1, 4, str.tostring(distribution_days_count), text_color=distribution_days_count >= 4 ? color.red : t_text, text_size=t_size, text_halign=text.align_center)
+        table.cell(status_table, 2, 4, dist_desc, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+        // Row 5: Heavy Distribution Days
+        if show_heavy_dd_count
+            string heavy_desc = heavy_distribution_days_count >= 3 ? "Multiple forceful, above-average-volume selloffs." : heavy_distribution_days_count > 0 ? "Some forceful selling detected." : "No heavy distribution in the active window."
+            table.cell(status_table, 0, 5, "Heavy DDs", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+            table.cell(status_table, 1, 5, str.tostring(heavy_distribution_days_count), text_color=heavy_distribution_days_count >= 3 ? color.red : t_text, text_size=t_size, text_halign=text.align_center)
+            table.cell(status_table, 2, 5, heavy_desc, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+        // Row 6: Active Accumulation Days
+        string acc_desc = accumulation_days_count >= 4 ? "Strong institutional-quality buying cluster." : accumulation_days_count >= 2 ? "Constructive buying pressure." : accumulation_days_count > 0 ? "Limited buying evidence." : "No active accumulation days."
+        table.cell(status_table, 0, 6, "Acc. Days", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+        table.cell(status_table, 1, 6, str.tostring(accumulation_days_count), text_color=accumulation_days_count >= 3 ? color.green : t_text, text_size=t_size, text_halign=text.align_center)
+        table.cell(status_table, 2, 6, acc_desc, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+        color inst_color = institutional_net >= 1 ? color.green : institutional_net <= -2 ? color.red : t_text
+        table.cell(status_table, 0, 7, "Institutional", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+        table.cell(status_table, 1, 7, institutional_state, text_color=inst_color, text_size=t_size, text_halign=text.align_center)
+        table.cell(status_table, 2, 7, "Net AD-DD " + str.tostring(institutional_net) + " · DD " + str.tostring(distribution_days_count) + " / AD " + str.tostring(accumulation_days_count), text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+        if show_ftd_row
+            string ftd_table_value = is_follow_through_day ? "FTD D" + str.tostring(rally_day_count) + " · " + ftd_timing_grade : not na(last_ftd_bar) and buy_switch ? "D" + str.tostring(last_ftd_rally_day) + " " + last_ftd_timing_grade + " · +" + str.tostring(bars_since_last_ftd) + "d" : ftd_status
+            string ftd_table_desc = is_follow_through_day ? "Confirmed +" + str.tostring(price_change, "#.2") + "% · Pulse Grade " + last_ftd_pulse_grade + "." : not na(last_ftd_bar) and buy_switch ? "Last confirmed FTD +" + str.tostring(last_ftd_gain, "#.2") + "% · Pulse Grade " + last_ftd_pulse_grade + "." : rally_day_count == 0 ? "No valid rally attempt is active." : rally_fragile ? "Rally attempt is too fragile for FTD confirmation." : ftd_window_open ? "FTD window open; waiting for qualifying price and volume." : rally_day_count < ftd_earliest_day ? "Rally developing; earliest FTD is Day " + str.tostring(ftd_earliest_day) + "." : "FTD window open; later signals are graded LATE."
+            color ftd_table_color = is_follow_through_day or (not na(last_ftd_bar) and buy_switch) ? color.green : rally_fragile ? color.red : ftd_window_open ? color.orange : t_text
+            table.cell(status_table, 0, 8, "FTD", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+            table.cell(status_table, 1, 8, ftd_table_value, text_color=ftd_table_color, text_size=t_size, text_halign=text.align_center)
+            table.cell(status_table, 2, 8, ftd_table_desc, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+        string pulse_desc = pulse_regime == 2 and atr_risk_extreme ? "Trend strong, but extension blocks fresh chasing." : pulse_regime == 2 and top_stall_caution ? "Trend bullish, but recent top-stall blocks aggression." : pulse_regime == 2 ? "Qualified internal acceleration." : pulse_regime == 1 ? "Constructive transition; not full acceleration." : pulse_regime == -1 ? "Internal pressure; stop adding risk." : pulse_regime == -2 ? "Qualified trend deterioration." : "No clear internal edge."
+        color pulse_color = pulse_regime == 2 ? color.green : pulse_regime == 1 ? color.orange : pulse_regime <= -1 ? color.red : t_text
+
+        if show_pulse_in_table and use_market_pulse
+            table.cell(status_table, 0, 9, "Market Pulse", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+            table.cell(status_table, 1, 9, pulse_name, text_color=pulse_color, text_size=t_size, text_halign=text.align_center)
+            table.cell(status_table, 2, 9, pulse_desc, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+        table.cell(status_table, 0, 10, "Pulse Quality", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+        table.cell(status_table, 1, 10, str.tostring(pulse_quality, "#") + " · " + pulse_quality_name, text_color=pulse_quality >= 70 ? color.green : pulse_quality >= 55 ? color.orange : color.red, text_size=t_size, text_halign=text.align_center)
+        table.cell(status_table, 2, 10, "VWMA expansion · slope · DI/ADX · RSI" + (pulse_use_rs ? " · RS" : ""), text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+        if show_atr_risk_in_table
+            string atr_risk_desc = atr_extension_zone == 2 ? "Too extended for fresh aggressive buying." : top_stall_caution ? "Recent stalling at extension; no chasing." : atr_extension_zone == 1 ? "Trend intact, but reward/risk is deteriorating." : atr_extension_zone == 0 ? "Within normal execution range." : "Below SMA50; defensive context."
+            color atr_risk_color = atr_extension_zone == 2 ? color.red : top_stall_caution or atr_extension_zone == 1 ? color.orange : atr_extension_zone == 0 ? color.green : color.red
+            table.cell(status_table, 0, 11, "ATR Extension", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+            table.cell(status_table, 1, 11, str.tostring(atrx_from_sma50, "#.1") + "x · " + atr_extension_name, text_color=atr_risk_color, text_size=t_size, text_halign=text.align_center)
+            table.cell(status_table, 2, 11, atr_risk_desc, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+        table.cell(status_table, 0, 12, "", bgcolor=t_header_bg)
+        table.cell(status_table, 1, 12, "— Decision Authority —", text_color=t_text_muted, text_size=t_size, bgcolor=t_header_bg, text_halign=text.align_center)
+        table.cell(status_table, 2, 12, "", bgcolor=t_header_bg)
+
+        table.cell(status_table, 0, 13, "Market Permission", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+        table.cell(status_table, 1, 13, market_permission, text_color=market_permission_color, text_size=t_size, text_halign=text.align_center)
+        table.cell(status_table, 2, 13, authority_why, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+        table.cell(status_table, 0, 14, "TODAY", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+        table.cell(status_table, 1, 14, today_action, text_color=market_permission_color, text_size=t_size, text_halign=text.align_center)
+        table.cell(status_table, 2, 14, authority_next, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+        table.cell(status_table, 0, 15, "Caution", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+        table.cell(status_table, 1, 15, authority_caution == "No major authority-level caution." ? "—" : "!", text_color=authority_caution == "No major authority-level caution." ? t_text_muted : color.orange, text_size=t_size, text_halign=text.align_center)
+        table.cell(status_table, 2, 15, authority_caution, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+        table.cell(status_table, 0, 16, "", bgcolor=t_header_bg)
+        table.cell(status_table, 1, 16, "— Active Signals —", text_color=t_text_muted, text_size=t_size, bgcolor=t_header_bg, text_halign=text.align_center)
+        table.cell(status_table, 2, 16, "", bgcolor=t_header_bg)
+
+        // Generate stacked strings for Buy Signals
+        string buy_codes = ""
+        string buy_desc = ""
+        if show_b1 and is_follow_through_day
+            buy_codes += "B1\n"
+            buy_desc += "Follow-Through Day\n"
+        if show_b2 and is_b2
+            buy_codes += "B2\n"
+            buy_desc += "Additional FTD\n"
+        if show_b3 and is_b3
+            buy_codes += "B3\n"
+            buy_desc += "Low Above EMA21\n"
+        if show_b4 and is_b4
+            buy_codes += "B4\n"
+            buy_desc += "High Above EMA21\n"
+        if show_b5 and is_b5_living_above_ema21
+            buy_codes += "B5\n"
+            buy_desc += "Closes > EMA21 for 5 days\n"
+        if show_b7 and is_accumulation_day
+            buy_codes += "B7\n"
+            buy_desc += "Accumulation Day\n"
+        if show_b8 and is_b8_higher_high
+            buy_codes += "B8\n"
+            buy_desc += "Higher High\n"
+        if show_b9 and is_b9_reversal_buy_back
+            buy_codes += "B9\n"
+            buy_desc += "Upside Reversal\n"
+        if show_hvwppu and is_hvwppu
+            buy_codes += "H\n"
+            buy_desc += "HVWPPU\n"
+        if use_market_pulse and pulse_enter_acceleration
+            buy_codes += "MP+\n"
+            buy_desc += "Pulse Acceleration\n"
+  
+            
+        // --- ADDED GAP STATUS TO TABLE ---
+        if buyablegapup
+            buy_codes += "BGU\n"
+            buy_desc += "Buyable Gap-Up\n"
+        else if isGapCandle
+            buy_codes += "GAP\n"
+            buy_desc += "Standard Gap Candle\n"
+
+        // Generate stacked strings for Sell Signals
+        string sell_codes = ""
+        string sell_desc = ""
+        if show_s5 and is_s5
+            sell_codes += "S5\n"
+            sell_desc += "Break Below EMA21\n"
+        if show_s6 and is_s6_overdue_break_below_ema21
+            sell_codes += "S6\n"
+            sell_desc += "Overdue Break Below EMA21\n"
+        if show_s9 and is_s9
+            sell_codes += "S9\n"
+            sell_desc += "Break Below 50-Day MA\n"
+        if show_s11 and is_s11_downside_reversal
+            sell_codes += "S11\n"
+            sell_desc += "Downside Reversal\n"
+        if show_cb and is_circuit_breaker
+            sell_codes += "CB\n"
+            sell_desc += "Circuit Breaker\n"
+        if show_dd and is_distribution_day
+            sell_codes += "DD\n"
+            sell_desc += "Distribution Day\n"
+        if show_sd and is_stalling_day
+            sell_codes += "SD\n"
+            sell_desc += "Stalling Day\n"
+        if top_stalling_day
+            sell_codes += "STALL+\n"
+            sell_desc += "Stall While ATR-Stretched\n"
+        if use_market_pulse and pulse_enter_deceleration
+            sell_codes += "MP−\n"
+            sell_desc += "Pulse Deceleration\n"
+
+        // Row 6: Buy Signals List
+        table.cell(status_table, 0, 17, "Buy Signals", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+        table.cell(status_table, 1, 17, buy_codes == "" ? "—" : buy_codes, text_color=color.green, text_size=t_size, text_halign=text.align_center)
+        table.cell(status_table, 2, 17, buy_desc == "" ? "Waiting" : buy_desc, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+        
+        // Row 7: Sell Signals List
+        table.cell(status_table, 0, 18, "Sell Signals", text_color=t_text_muted, text_size=t_size, text_halign=text.align_right)
+        table.cell(status_table, 1, 18, sell_codes == "" ? "—" : sell_codes, text_color=color.red, text_size=t_size, text_halign=text.align_center)
+        table.cell(status_table, 2, 18, sell_desc == "" ? "Waiting" : sell_desc, text_color=t_text_muted, text_size=t_size, text_halign=text.align_left)
+
+// ===========================
+// DATA WINDOW / SCREENER OUTPUTS
+// ===========================
+plot(distribution_days_count, "Tracker: Active IBD DD Count", display=display.data_window)
+plot(heavy_distribution_days_count, "Tracker: Heavy DD Count", display=display.data_window)
+plot(accumulation_days_count, "Tracker: Active Accumulation Count", display=display.data_window)
+plot(is_distribution_day ? 1 : 0, "Tracker: New Distribution Day", display=display.data_window)
+plot(is_accumulation_day ? 1 : 0, "Tracker: New Accumulation Day", display=display.data_window)
+plot(atrx_from_sma50, "Risk: ATRx Above SMA50", display=display.data_window)
+plot(atr_extension_zone, "Risk: ATR Extension Zone", display=display.data_window)
+plot(top_stalling_day ? 1 : 0, "Risk: New Top-Stall", display=display.data_window)
+plot(top_stall_caution ? 1 : 0, "Risk: Top-Stall Caution Active", display=display.data_window)
+plot(power_trend_state ? 1 : 0, "Power Trend: Raw State", display=display.data_window)
+plot(power_trend_operational ? 1 : 0, "Power Trend: Operational ON", display=display.data_window)
+plot(power_trend_paused ? 1 : 0, "Power Trend: Paused", display=display.data_window)
+plot(rally_day_count, "Rally: Attempt Day", display=display.data_window)
+plot(rally_progress_pct, "Rally: Progress from Day 1 %", display=display.data_window)
+plot(rally_healthy ? 1 : 0, "Rally: Healthy", display=display.data_window)
+plot(rally_weak ? 1 : 0, "Rally: Weak", display=display.data_window)
+plot(rally_fragile ? 1 : 0, "Rally: Fragile", display=display.data_window)
+plot(ftd_window_open ? 1 : 0, "FTD: Window Open", display=display.data_window)
+plot(is_follow_through_day ? 1 : 0, "FTD: New Signal", display=display.data_window)
+plot(ftd_gain_threshold, "FTD: Gain Threshold %", display=display.data_window)
+plot(fresh_local_low_reset ? 1 : 0, "Rally: Fresh Local-Low Reset", display=display.data_window)
+plot(stale_rally_reset ? 1 : 0, "Rally: Stale-Age Reset", display=display.data_window)
+plot(pulse_quality, "Authority: Pulse Quality", display=display.data_window)
+plot(institutional_net, "Authority: Institutional Net AD-DD", display=display.data_window)
+plot(market_permission == "OFFENSIVE" ? 4 : market_permission == "SELECTIVE" ? 3 : market_permission == "CAUTION" ? 2 : market_permission == "DEFENSIVE" ? 1 : 0, "Authority: Market Permission 0-4", display=display.data_window)
+plot(na(bars_since_last_ftd) ? -1 : bars_since_last_ftd, "FTD: Bars Since Last", display=display.data_window)
+
+// ===========================
+// ALERTS
+// ===========================
+
+if ta.change(market_exposure) != 0
+    direction = market_exposure > market_exposure[1] ? "📈" : "📉"
+    alert_message = "Market exposure change for " + syminfo.ticker + ": " + direction +  " Market exposure changed from " + str.tostring(market_exposure[1]) + "% to " +   str.tostring(market_exposure) + "%"
+    
+    if alert_type == "On Close" and barstate.isconfirmed
+        alert(alert_message, alert.freq_once_per_bar)
+    else if alert_type == "Real-Time"
+        alert(alert_message, alert.freq_once_per_bar_close)
+
+if is_follow_through_day and show_b1
+    alert("B1: Follow-Through Day detected on " + syminfo.ticker, alert.freq_once_per_bar)
+
+if is_distribution_day and show_dd  
+    alert("Distribution Day detected on " + syminfo.ticker, alert.freq_once_per_bar)
+
+if is_circuit_breaker and show_cb
+    alert("Circuit Breaker triggered on " + syminfo.ticker, alert.freq_once_per_bar)
+
+if pulse_enter_acceleration and use_market_pulse
+    alert("Market Pulse acceleration on " + syminfo.ticker + ". Permission: " + market_permission + " · Today: " + today_action, alert.freq_once_per_bar_close)
+
+if pulse_enter_deceleration and use_market_pulse
+    alert("Market Pulse deceleration on " + syminfo.ticker + ". Permission: " + market_permission + " · Today: " + today_action, alert.freq_once_per_bar_close)
+
+alertcondition(pulse_enter_acceleration and use_market_pulse,
+     title="IBD-MS + Market Pulse Acceleration",
+     message="Market Pulse acceleration confirmed.")
+
+alertcondition(pulse_enter_deceleration and use_market_pulse,
+     title="IBD-MS + Market Pulse Deceleration",
+     message="Market Pulse deceleration confirmed.")
+
+alertcondition(top_stalling_day,
+     title="IBD-MS Top Stall at ATR Extension",
+     message="Stalling day occurred while the index was stretched above SMA50. Block fresh aggressive exposure.")
+
+alertcondition(atr_risk_extreme and not atr_risk_extreme[1],
+     title="IBD-MS ATR Extension Extreme",
+     message="Index entered the extended ATR zone above SMA50. Protect profits and avoid chasing.")
+
+alertcondition(power_operational_pause,
+     title="IBD-MS Operational Power Trend Paused",
+     message="Operational Power Trend paused because current risk conditions no longer support aggressive sizing.")
+
+alertcondition(power_operational_start,
+     title="IBD-MS Operational Power Trend On",
+     message="Operational Power Trend turned ON: structural trend and current risk conditions are aligned.")
+
+alertcondition(is_follow_through_day,
+     title="IBD-MS Follow-Through Day",
+     message="Follow-Through Day confirmed on the active rally attempt.")
+
+alertcondition(market_permission_offensive and not market_permission_offensive[1],
+     title="Unified Market Authority — OFFENSIVE",
+     message="Market permission upgraded to OFFENSIVE.")
+
+alertcondition(today_reduce_risk and not today_reduce_risk[1],
+     title="Unified Market Authority — REDUCE RISK",
+     message="Market authority changed to REDUCE RISK.")
+
+// ===========================
+// TRADING WISDOM
+// ===========================
+
+if show_trading_wisdom and barstate.islast
+    wisdom_messages = array.new<string>()
+    array.push(wisdom_messages, "The key to successful trading is managing exposure based on market health")
+    array.push(wisdom_messages, "Always check Distribution Days count before making new trades")
+    array.push(wisdom_messages, "Let the Buy Switch guide your market participation")
+    array.push(wisdom_messages, "It's better to miss an opportunity than catch a falling market")
+    array.push(wisdom_messages, "Follow Power Trend states for proper position sizing")
+    
+    wisdom_index = bar_index % array.size(wisdom_messages)
+    current_wisdom = array.get(wisdom_messages, wisdom_index)
+    
+    var label wisdom_label = na
+    label.delete(wisdom_label)
+    wisdom_label := label.new(bar_index,high * 1.01, current_wisdom,  color=color.yellow, textcolor=color.black, style=label.style_label_lower_left,  size=size.small)
+
+// ===========================
+// BACKGROUND COLORING (IBD Style)
+// ===========================
+
+is_dd = is_distribution_day        
+is_sd = is_stalling_day            
+is_ad = price_change >= 0.20 and curr_volume > prev_volume  
+
+dd_color = color.new(color.red, 0)
+sd_color = color.new(color.orange, 0)
+ad_color = color.new(color.green, 0)
+neutral_color = color.new(color.gray, 0)
+
+bar_color =
+     is_dd ? dd_color
+   : is_sd ? sd_color
+   : is_ad ? ad_color
+   : neutral_color
+
+barcolor(show_ibd_candles ? bar_color : na)
+
+ 
