@@ -1,5 +1,5 @@
 //@version=6
-indicator('ATR% 50SMA Extension · Dual Price Zones v1.1', shorttitle='ATR50 Ext DZ', overlay=false, max_lines_count=200, max_labels_count=100, max_boxes_count=4, max_bars_back=500)
+indicator('ATR% 50SMA Extension · Four Price Zones v1.2', shorttitle='ATR50 Ext 4Z', overlay=false, max_lines_count=200, max_labels_count=100, max_boxes_count=8, max_bars_back=500)
 // NOW-SES v1.0: existing oscillator, divergence, alerts and calculations retained.
 // Dual price zones are visual-only. force_overlay=true keeps price drawings on the main chart.
 
@@ -48,6 +48,21 @@ zone_up_color = input.color(color.orange, 'Upper zone colour', group=grp_z)
 zone_dn_color = input.color(color.aqua, 'Lower zone colour', group=grp_z)
 zone_transparency = input.int(85, 'Zone fill transparency (0 solid, 100 invisible)', minval=0, maxval=100, group=grp_z)
 zone_daily_only = input.bool(true, 'Only show on Daily chart', group=grp_z, tooltip='ON matches the original daily ATR visual. OFF calculates using the current chart timeframe.')
+
+// Extreme deviation tiers are separate from the original dual zones.
+grp_x = 'Extreme ATR Zones · Main Price Chart'
+show_extreme_upper = input.bool(false, 'Show extreme upside +7 to +9 ATR', group=grp_x, tooltip='Off by default to preserve normal chart readability. Purely observational; not a sell signal.')
+show_extreme_lower = input.bool(true, 'Show extreme downside -7 to -9 ATR', group=grp_x, tooltip='Observation zone, never a contrarian buy trigger.')
+extreme_up_start = input.float(7.0, 'Extreme upside start (+ATR)', minval=0.0, step=0.25, group=grp_x)
+extreme_up_end = input.float(9.0, 'Extreme upside end (+ATR)', minval=0.0, step=0.25, group=grp_x)
+extreme_dn_start = input.float(7.0, 'Extreme downside start (-ATR)', minval=0.0, step=0.25, group=grp_x)
+extreme_dn_end = input.float(9.0, 'Extreme downside end (-ATR)', minval=0.0, step=0.25, group=grp_x)
+extreme_up_color = input.color(color.fuchsia, 'Extreme upside colour', group=grp_x)
+extreme_dn_color = input.color(color.blue, 'Extreme downside colour', group=grp_x)
+extreme_transparency = input.int(90, 'Extreme fill transparency', minval=0, maxval=100, group=grp_x)
+extreme_labels = input.bool(true, 'Show extreme price labels', group=grp_x)
+extreme_lines = input.bool(true, 'Show extreme dashed boundaries', group=grp_x)
+
 
 // --- Calculation (always on raw scale): retained ---
 _sma = ta.sma(src, sma_len)
@@ -319,6 +334,137 @@ if barstate.islast
         if not na(zDnHiLabel)
             label.delete(zDnHiLabel)
             zDnHiLabel := na
+
+// --- Optional extreme displacement bands. Original oscillator/divergence/signal code remains unchanged. ---
+// Using the exact same SMA/ATR input series, with no extra security requests or plots.
+float extremeUpLow = _sma + math.min(extreme_up_start, extreme_up_end) * _atr
+float extremeUpHigh = _sma + math.max(extreme_up_start, extreme_up_end) * _atr
+float extremeDnHigh = _sma - math.min(extreme_dn_start, extreme_dn_end) * _atr
+float extremeDnLow = _sma - math.max(extreme_dn_start, extreme_dn_end) * _atr
+
+// Persistent handles are required so last-bar updates do not accumulate drawings.
+var box zExtUpBox = na
+var box zExtDnBox = na
+var line zExtUpNear = na
+var line zExtUpFar = na
+var line zExtDnNear = na
+var line zExtDnFar = na
+var label zExtUpNearLabel = na
+var label zExtUpFarLabel = na
+var label zExtDnNearLabel = na
+var label zExtDnFarLabel = na
+
+if barstate.islast
+    int extX1 = math.max(0, bar_index - zone_left)
+    int extX2 = bar_index + zone_right
+    if zone_ready and show_extreme_upper
+        if na(zExtUpBox)
+            zExtUpBox := box.new(extX1, extremeUpHigh, extX2, extremeUpLow, border_color=color.new(extreme_up_color, 100), bgcolor=color.new(extreme_up_color, extreme_transparency), force_overlay=true)
+        box.set_lefttop(zExtUpBox, extX1, extremeUpHigh)
+        box.set_rightbottom(zExtUpBox, extX2, extremeUpLow)
+        box.set_bgcolor(zExtUpBox, color.new(extreme_up_color, extreme_transparency))
+        if extreme_lines
+            if na(zExtUpNear)
+                zExtUpNear := line.new(extX1, extremeUpLow, extX2, extremeUpLow, color=extreme_up_color, style=line.style_dashed, width=1, force_overlay=true)
+            if na(zExtUpFar)
+                zExtUpFar := line.new(extX1, extremeUpHigh, extX2, extremeUpHigh, color=extreme_up_color, style=line.style_dashed, width=1, force_overlay=true)
+            line.set_xy1(zExtUpNear, extX1, extremeUpLow)
+            line.set_xy2(zExtUpNear, extX2, extremeUpLow)
+            line.set_xy1(zExtUpFar, extX1, extremeUpHigh)
+            line.set_xy2(zExtUpFar, extX2, extremeUpHigh)
+        else
+            if not na(zExtUpNear)
+                line.delete(zExtUpNear)
+                zExtUpNear := na
+            if not na(zExtUpFar)
+                line.delete(zExtUpFar)
+                zExtUpFar := na
+        if extreme_labels
+            if na(zExtUpNearLabel)
+                zExtUpNearLabel := label.new(extX2, extremeUpLow, '', style=label.style_label_left, color=color.new(color.black, 100), textcolor=extreme_up_color, size=size.small, force_overlay=true)
+            if na(zExtUpFarLabel)
+                zExtUpFarLabel := label.new(extX2, extremeUpHigh, '', style=label.style_label_left, color=color.new(color.black, 100), textcolor=extreme_up_color, size=size.small, force_overlay=true)
+            label.set_xy(zExtUpNearLabel, extX2, extremeUpLow)
+            label.set_xy(zExtUpFarLabel, extX2, extremeUpHigh)
+            label.set_text(zExtUpNearLabel, '+' + str.tostring(math.min(extreme_up_start, extreme_up_end), '#.##') + ' ATR EXTREME  ' + str.tostring(extremeUpLow, format.mintick))
+            label.set_text(zExtUpFarLabel, '+' + str.tostring(math.max(extreme_up_start, extreme_up_end), '#.##') + ' ATR EXTREME  ' + str.tostring(extremeUpHigh, format.mintick))
+        else
+            if not na(zExtUpNearLabel)
+                label.delete(zExtUpNearLabel)
+                zExtUpNearLabel := na
+            if not na(zExtUpFarLabel)
+                label.delete(zExtUpFarLabel)
+                zExtUpFarLabel := na
+    else
+        if not na(zExtUpBox)
+            box.delete(zExtUpBox)
+            zExtUpBox := na
+        if not na(zExtUpNear)
+            line.delete(zExtUpNear)
+            zExtUpNear := na
+        if not na(zExtUpFar)
+            line.delete(zExtUpFar)
+            zExtUpFar := na
+        if not na(zExtUpNearLabel)
+            label.delete(zExtUpNearLabel)
+            zExtUpNearLabel := na
+        if not na(zExtUpFarLabel)
+            label.delete(zExtUpFarLabel)
+            zExtUpFarLabel := na
+    if zone_ready and show_extreme_lower
+        if na(zExtDnBox)
+            zExtDnBox := box.new(extX1, extremeDnHigh, extX2, extremeDnLow, border_color=color.new(extreme_dn_color, 100), bgcolor=color.new(extreme_dn_color, extreme_transparency), force_overlay=true)
+        box.set_lefttop(zExtDnBox, extX1, extremeDnHigh)
+        box.set_rightbottom(zExtDnBox, extX2, extremeDnLow)
+        box.set_bgcolor(zExtDnBox, color.new(extreme_dn_color, extreme_transparency))
+        if extreme_lines
+            if na(zExtDnNear)
+                zExtDnNear := line.new(extX1, extremeDnHigh, extX2, extremeDnHigh, color=extreme_dn_color, style=line.style_dashed, width=1, force_overlay=true)
+            if na(zExtDnFar)
+                zExtDnFar := line.new(extX1, extremeDnLow, extX2, extremeDnLow, color=extreme_dn_color, style=line.style_dashed, width=1, force_overlay=true)
+            line.set_xy1(zExtDnNear, extX1, extremeDnHigh)
+            line.set_xy2(zExtDnNear, extX2, extremeDnHigh)
+            line.set_xy1(zExtDnFar, extX1, extremeDnLow)
+            line.set_xy2(zExtDnFar, extX2, extremeDnLow)
+        else
+            if not na(zExtDnNear)
+                line.delete(zExtDnNear)
+                zExtDnNear := na
+            if not na(zExtDnFar)
+                line.delete(zExtDnFar)
+                zExtDnFar := na
+        if extreme_labels
+            if na(zExtDnNearLabel)
+                zExtDnNearLabel := label.new(extX2, extremeDnHigh, '', style=label.style_label_left, color=color.new(color.black, 100), textcolor=extreme_dn_color, size=size.small, force_overlay=true)
+            if na(zExtDnFarLabel)
+                zExtDnFarLabel := label.new(extX2, extremeDnLow, '', style=label.style_label_left, color=color.new(color.black, 100), textcolor=extreme_dn_color, size=size.small, force_overlay=true)
+            label.set_xy(zExtDnNearLabel, extX2, extremeDnHigh)
+            label.set_xy(zExtDnFarLabel, extX2, extremeDnLow)
+            label.set_text(zExtDnNearLabel, '-' + str.tostring(math.min(extreme_dn_start, extreme_dn_end), '#.##') + ' ATR EXTREME  ' + str.tostring(extremeDnHigh, format.mintick))
+            label.set_text(zExtDnFarLabel, '-' + str.tostring(math.max(extreme_dn_start, extreme_dn_end), '#.##') + ' ATR EXTREME  ' + str.tostring(extremeDnLow, format.mintick))
+        else
+            if not na(zExtDnNearLabel)
+                label.delete(zExtDnNearLabel)
+                zExtDnNearLabel := na
+            if not na(zExtDnFarLabel)
+                label.delete(zExtDnFarLabel)
+                zExtDnFarLabel := na
+    else
+        if not na(zExtDnBox)
+            box.delete(zExtDnBox)
+            zExtDnBox := na
+        if not na(zExtDnNear)
+            line.delete(zExtDnNear)
+            zExtDnNear := na
+        if not na(zExtDnFar)
+            line.delete(zExtDnFar)
+            zExtDnFar := na
+        if not na(zExtDnNearLabel)
+            label.delete(zExtDnNearLabel)
+            zExtDnNearLabel := na
+        if not na(zExtDnFarLabel)
+            label.delete(zExtDnFarLabel)
+            zExtDnFarLabel := na
 
 // --- Original alerts: unchanged ---
 alertcondition(snap_up, 'Snapback from oversold', 'ATR% 50SMA left oversold zone')
