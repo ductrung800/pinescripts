@@ -1,0 +1,328 @@
+//@version=6
+indicator('ATR% 50SMA Extension · Dual Price Zones v1.1', shorttitle='ATR50 Ext DZ', overlay=false, max_lines_count=200, max_labels_count=100, max_boxes_count=4, max_bars_back=500)
+// NOW-SES v1.0: existing oscillator, divergence, alerts and calculations retained.
+// Dual price zones are visual-only. force_overlay=true keeps price drawings on the main chart.
+
+// --- Settings ---
+atr_len = input.int(14, 'ATR Length', minval=1)
+sma_len = input.int(50, 'SMA Length', minval=1)
+src = input.source(close, 'Source')
+smooth = input.int(1, 'Smoothing (EMA, 1 = off)', minval=1)
+
+grp_n = 'Normalization'
+normalize = input.bool(false, 'Normalize to -1 … +1', group=grp_n)
+cap_up = input.float(8.0, 'Upside cap (maps to +1)', minval=0.1, group=grp_n)
+cap_dn = input.float(5.5, 'Downside cap (maps to -1)', minval=0.1, group=grp_n)
+
+grp_l = 'Levels (raw ATR multiples)'
+ideal_lim = input.float(4.0, 'Ideal limit', group=grp_l)
+hard_lim = input.float(5.0, 'Hard limit', group=grp_l)
+os_lvl = input.float(-4.0, 'Oversold level', group=grp_l)
+
+grp_d = 'Divergence'
+div_lb = input.int(4, 'Pivot bars (left/right)', minval=1, group=grp_d)
+div_min = input.int(5, 'Min bars between pivots', minval=1, group=grp_d)
+div_rng = input.int(100, 'Max bars between pivots', minval=5, group=grp_d)
+div_buf = input.float(1.0, 'Zone looseness (ATR multiples)', minval=0.0, step=0.25, group=grp_d, tooltip='Bull pivots must be below Oversold + this. Bear pivots must be above Ideal limit - this.')
+show_bull = input.bool(true, 'Bullish divergence', group=grp_d)
+show_bear = input.bool(true, 'Bearish divergence', group=grp_d)
+show_early = input.bool(true, 'Early (unconfirmed) bullish warning', group=grp_d)
+strict = input.bool(true, 'Clean line only (oscillator must not cross the line)', group=grp_d)
+show_osc_l = input.bool(true, 'Draw lines on oscillator', group=grp_d)
+show_px_l = input.bool(true, 'Draw lines on price chart', group=grp_d)
+line_w = input.int(2, 'Line width', minval=1, maxval=4, group=grp_d)
+
+// --- ATR dual-zone settings: main price pane only ---
+grp_z = 'Dual ATR Zones · Main Price Chart'
+show_upper = input.bool(true, 'Show +4 to +5 ATR extension zone', group=grp_z)
+show_lower = input.bool(true, 'Show -3 to -5 ATR recovery zone', group=grp_z)
+zone_up_lo = input.float(4.0, 'Upper zone start (+ATR)', minval=0.0, step=0.25, group=grp_z)
+zone_up_hi = input.float(5.0, 'Upper zone end (+ATR)', minval=0.0, step=0.25, group=grp_z)
+zone_dn_top = input.float(3.0, 'Lower zone recovery edge (-ATR)', minval=0.0, step=0.25, group=grp_z)
+zone_dn_bottom = input.float(5.0, 'Lower zone mean-reversion edge (-ATR)', minval=0.0, step=0.25, group=grp_z)
+zone_left = input.int(0, 'Zone extends left (bars)', minval=0, maxval=120, group=grp_z)
+zone_right = input.int(14, 'Zone extends right (bars)', minval=1, maxval=100, group=grp_z)
+zone_labels = input.bool(true, 'Show price level labels', group=grp_z)
+zone_lines = input.bool(true, 'Show dashed zone boundaries', group=grp_z)
+zone_up_color = input.color(color.orange, 'Upper zone colour', group=grp_z)
+zone_dn_color = input.color(color.aqua, 'Lower zone colour', group=grp_z)
+zone_transparency = input.int(85, 'Zone fill transparency (0 solid, 100 invisible)', minval=0, maxval=100, group=grp_z)
+zone_daily_only = input.bool(true, 'Only show on Daily chart', group=grp_z, tooltip='ON matches the original daily ATR visual. OFF calculates using the current chart timeframe.')
+
+// --- Calculation (always on raw scale): retained ---
+_sma = ta.sma(src, sma_len)
+_atr = ta.atr(atr_len)
+raw0 = (na(_sma) or _sma == 0 or na(_atr) or _atr <= 0) ? na : ((src / _sma - 1.0) / (_atr / close))
+raw = ta.ema(raw0, smooth)
+
+// --- Display scaling ---
+f_disp(x) =>
+    normalize ? math.max(-1.0, math.min(1.0, x >= 0 ? x / cap_up : x / cap_dn)) : x
+
+// --- States ---
+is_over = raw >= hard_lim
+is_accept = raw >= ideal_lim and raw < hard_lim
+is_oversold = raw < os_lvl
+col = is_over ? color.rgb(220, 50, 50) : is_accept ? color.rgb(130, 220, 130) : is_oversold ? color.rgb(0, 200, 190) : color.rgb(80, 180, 80)
+
+// --- Basic signals ---
+snap_up = ta.crossover(raw, os_lvl)
+ext_warn = ta.crossover(raw, hard_lim)
+
+// --- Divergence pivots ---
+pl = ta.pivotlow(raw, div_lb, div_lb)
+ph = ta.pivothigh(raw, div_lb, div_lb)
+win = 2 * div_lb + 1
+pxLow = ta.lowest(low, win)
+pxHigh = ta.highest(high, win)
+pxLowBar = bar_index + ta.lowestbars(low, win)
+pxHighBar = bar_index + ta.highestbars(high, win)
+
+// Stored pivots (inside the extreme zones only)
+var array<float> lO = array.new<float>()
+var array<float> lP = array.new<float>()
+var array<int> lB = array.new<int>()
+var array<int> lPB = array.new<int>()
+var array<float> hO = array.new<float>()
+var array<float> hP = array.new<float>()
+var array<int> hB = array.new<int>()
+var array<int> hPB = array.new<int>()
+
+bool bull_div = false
+bool bear_div = false
+int pBarNow = bar_index - div_lb
+
+// Last stored low pivot (for the early warning), read before it is updated
+float eOsc = lO.size() > 0 ? lO.last() : na
+float ePx = lP.size() > 0 ? lP.last() : na
+int eBar = lB.size() > 0 ? lB.last() : na
+
+// --- Bullish: price lower low, oscillator higher low ---
+if show_bull and not na(pl) and pl <= os_lvl + div_buf
+    int bi = -1
+    float bo = na
+    for i = 0 to lB.size() - 1
+        if i >= lB.size()
+            break
+        int gap = pBarNow - lB.get(i)
+        if gap >= div_min and gap <= div_rng and pxLow < lP.get(i) and pl > lO.get(i) and (na(bo) or lO.get(i) < bo)
+            bool ok = true
+            if strict
+                float o1 = lO.get(i)
+                for j = div_lb + 1 to gap + div_lb - 1
+                    float t = (gap + div_lb - j) / gap
+                    float ly = o1 + (pl - o1) * t
+                    if not na(raw[j]) and raw[j] < ly
+                        ok := false
+                        break
+            if ok
+                bi := i
+                bo := lO.get(i)
+    if bi >= 0
+        bull_div := true
+        if show_osc_l
+            line.new(lB.get(bi), f_disp(lO.get(bi)), pBarNow, f_disp(pl), color=color.aqua, style=line.style_dashed, width=line_w)
+        if show_px_l
+            line.new(lPB.get(bi), lP.get(bi), pxLowBar, pxLow, color=color.aqua, style=line.style_dashed, width=line_w, force_overlay=true)
+    lO.push(pl)
+    lP.push(pxLow)
+    lB.push(pBarNow)
+    lPB.push(pxLowBar)
+    if lB.size() > 15
+        lO.shift()
+        lP.shift()
+        lB.shift()
+        lPB.shift()
+
+// --- Bearish: price higher high, oscillator lower high ---
+if show_bear and not na(ph) and ph >= ideal_lim - div_buf
+    int bi = -1
+    float bo = na
+    for i = 0 to hB.size() - 1
+        if i >= hB.size()
+            break
+        int gap = pBarNow - hB.get(i)
+        if gap >= div_min and gap <= div_rng and pxHigh > hP.get(i) and ph < hO.get(i) and (na(bo) or hO.get(i) > bo)
+            bool ok = true
+            if strict
+                float o1 = hO.get(i)
+                for j = div_lb + 1 to gap + div_lb - 1
+                    float t = (gap + div_lb - j) / gap
+                    float ly = o1 + (ph - o1) * t
+                    if not na(raw[j]) and raw[j] > ly
+                        ok := false
+                        break
+            if ok
+                bi := i
+                bo := hO.get(i)
+    if bi >= 0
+        bear_div := true
+        if show_osc_l
+            line.new(hB.get(bi), f_disp(hO.get(bi)), pBarNow, f_disp(ph), color=color.orange, style=line.style_dashed, width=line_w)
+        if show_px_l
+            line.new(hPB.get(bi), hP.get(bi), pxHighBar, pxHigh, color=color.orange, style=line.style_dashed, width=line_w, force_overlay=true)
+    hO.push(ph)
+    hP.push(pxHigh)
+    hB.push(pBarNow)
+    hPB.push(pxHighBar)
+    if hB.size() > 15
+        hO.shift()
+        hP.shift()
+        hB.shift()
+        hPB.shift()
+
+// Early warning: price undercuts the last swing low while the oscillator holds above its low and turns up
+early_cond = show_early and not na(eBar) and (bar_index - eBar) <= div_rng and raw <= os_lvl + div_buf and low < ePx and raw > eOsc and raw > raw[1]
+early_sig = early_cond and not early_cond[1]
+
+// --- Original oscillator plots ---
+plot(f_disp(raw), title='ATR% 50SMA', color=col, linewidth=2)
+plot(f_disp(ideal_lim), 'Ideal limit', color=color.new(color.green, 60))
+plot(f_disp(hard_lim), 'Hard limit', color=color.new(color.red, 60))
+plot(f_disp(os_lvl), 'Oversold', color=color.new(color.teal, 60))
+hline(0, '0', color=color.new(color.gray, 40), linestyle=hline.style_solid)
+bgcolor(is_oversold ? color.new(color.teal, 88) : na)
+plotshape(snap_up ? f_disp(os_lvl) : na, 'Snapback', shape.triangleup, location.absolute, color.lime, size=size.tiny)
+plotshape(ext_warn ? f_disp(hard_lim) : na, 'Overextended', shape.triangledown, location.absolute, color.red, size=size.tiny)
+plotshape(bull_div ? f_disp(raw[div_lb]) : na, 'Bull divergence', shape.diamond, location.absolute, color.aqua, offset=-div_lb, size=size.small)
+plotshape(bear_div ? f_disp(raw[div_lb]) : na, 'Bear divergence', shape.diamond, location.absolute, color.orange, offset=-div_lb, size=size.small)
+plotshape(early_sig ? f_disp(raw) : na, 'Early bull warning', shape.circle, location.absolute, color.new(color.aqua, 20), size=size.tiny)
+
+// --- NEW: Current price-based ATR zones, forced onto the MAIN chart ---
+// Levels deliberately use the existing _sma and _atr series, NOT the normalized oscillator.
+// As in the screenshot, only the latest levels are projected; these are not a backtest signal.
+zone_ready = (not zone_daily_only or timeframe.isdaily) and not na(_sma) and not na(_atr) and _atr > 0
+up_bottom = _sma + math.min(zone_up_lo, zone_up_hi) * _atr
+up_top = _sma + math.max(zone_up_lo, zone_up_hi) * _atr
+down_top = _sma - math.min(zone_dn_top, zone_dn_bottom) * _atr
+down_bottom = _sma - math.max(zone_dn_top, zone_dn_bottom) * _atr
+
+var box zUpperBox = na
+var box zLowerBox = na
+var line zUpLoLine = na
+var line zUpHiLine = na
+var line zDnLoLine = na
+var line zDnHiLine = na
+var label zUpLoLabel = na
+var label zUpHiLabel = na
+var label zDnLoLabel = na
+var label zDnHiLabel = na
+
+if barstate.islast
+    int x1 = math.max(0, bar_index - zone_left)
+    int x2 = bar_index + zone_right
+    if zone_ready and show_upper
+        if na(zUpperBox)
+            zUpperBox := box.new(x1, up_top, x2, up_bottom, border_color=color.new(zone_up_color, 100), bgcolor=color.new(zone_up_color, zone_transparency), force_overlay=true)
+        box.set_lefttop(zUpperBox, x1, up_top)
+        box.set_rightbottom(zUpperBox, x2, up_bottom)
+        box.set_bgcolor(zUpperBox, color.new(zone_up_color, zone_transparency))
+        if zone_lines
+            if na(zUpLoLine)
+                zUpLoLine := line.new(x1, up_bottom, x2, up_bottom, color=zone_up_color, style=line.style_dashed, width=1, force_overlay=true)
+            if na(zUpHiLine)
+                zUpHiLine := line.new(x1, up_top, x2, up_top, color=zone_up_color, style=line.style_dashed, width=1, force_overlay=true)
+            line.set_xy1(zUpLoLine, x1, up_bottom)
+            line.set_xy2(zUpLoLine, x2, up_bottom)
+            line.set_xy1(zUpHiLine, x1, up_top)
+            line.set_xy2(zUpHiLine, x2, up_top)
+        else
+            if not na(zUpLoLine)
+                line.delete(zUpLoLine)
+                zUpLoLine := na
+            if not na(zUpHiLine)
+                line.delete(zUpHiLine)
+                zUpHiLine := na
+        if zone_labels
+            if na(zUpLoLabel)
+                zUpLoLabel := label.new(x2, up_bottom, '', style=label.style_label_left, color=color.new(color.black, 100), textcolor=zone_up_color, size=size.small, force_overlay=true)
+            if na(zUpHiLabel)
+                zUpHiLabel := label.new(x2, up_top, '', style=label.style_label_left, color=color.new(color.black, 100), textcolor=zone_up_color, size=size.small, force_overlay=true)
+            label.set_xy(zUpLoLabel, x2, up_bottom)
+            label.set_xy(zUpHiLabel, x2, up_top)
+            label.set_text(zUpLoLabel, '+' + str.tostring(math.min(zone_up_lo, zone_up_hi), '#.##') + ' ATR (SMA' + str.tostring(sma_len) + ')  ' + str.tostring(up_bottom, format.mintick))
+            label.set_text(zUpHiLabel, '+' + str.tostring(math.max(zone_up_lo, zone_up_hi), '#.##') + ' ATR (SMA' + str.tostring(sma_len) + ')  ' + str.tostring(up_top, format.mintick))
+        else
+            if not na(zUpLoLabel)
+                label.delete(zUpLoLabel)
+                zUpLoLabel := na
+            if not na(zUpHiLabel)
+                label.delete(zUpHiLabel)
+                zUpHiLabel := na
+    else
+        if not na(zUpperBox)
+            box.delete(zUpperBox)
+            zUpperBox := na
+        if not na(zUpLoLine)
+            line.delete(zUpLoLine)
+            zUpLoLine := na
+        if not na(zUpHiLine)
+            line.delete(zUpHiLine)
+            zUpHiLine := na
+        if not na(zUpLoLabel)
+            label.delete(zUpLoLabel)
+            zUpLoLabel := na
+        if not na(zUpHiLabel)
+            label.delete(zUpHiLabel)
+            zUpHiLabel := na
+    if zone_ready and show_lower
+        if na(zLowerBox)
+            zLowerBox := box.new(x1, down_top, x2, down_bottom, border_color=color.new(zone_dn_color, 100), bgcolor=color.new(zone_dn_color, zone_transparency), force_overlay=true)
+        box.set_lefttop(zLowerBox, x1, down_top)
+        box.set_rightbottom(zLowerBox, x2, down_bottom)
+        box.set_bgcolor(zLowerBox, color.new(zone_dn_color, zone_transparency))
+        if zone_lines
+            if na(zDnLoLine)
+                zDnLoLine := line.new(x1, down_top, x2, down_top, color=zone_dn_color, style=line.style_dashed, width=1, force_overlay=true)
+            if na(zDnHiLine)
+                zDnHiLine := line.new(x1, down_bottom, x2, down_bottom, color=zone_dn_color, style=line.style_dashed, width=1, force_overlay=true)
+            line.set_xy1(zDnLoLine, x1, down_top)
+            line.set_xy2(zDnLoLine, x2, down_top)
+            line.set_xy1(zDnHiLine, x1, down_bottom)
+            line.set_xy2(zDnHiLine, x2, down_bottom)
+        else
+            if not na(zDnLoLine)
+                line.delete(zDnLoLine)
+                zDnLoLine := na
+            if not na(zDnHiLine)
+                line.delete(zDnHiLine)
+                zDnHiLine := na
+        if zone_labels
+            if na(zDnLoLabel)
+                zDnLoLabel := label.new(x2, down_top, '', style=label.style_label_left, color=color.new(color.black, 100), textcolor=zone_dn_color, size=size.small, force_overlay=true)
+            if na(zDnHiLabel)
+                zDnHiLabel := label.new(x2, down_bottom, '', style=label.style_label_left, color=color.new(color.black, 100), textcolor=zone_dn_color, size=size.small, force_overlay=true)
+            label.set_xy(zDnLoLabel, x2, down_top)
+            label.set_xy(zDnHiLabel, x2, down_bottom)
+            label.set_text(zDnLoLabel, '-' + str.tostring(math.min(zone_dn_top, zone_dn_bottom), '#.##') + ' ATR RECOVERY  ' + str.tostring(down_top, format.mintick))
+            label.set_text(zDnHiLabel, '-' + str.tostring(math.max(zone_dn_top, zone_dn_bottom), '#.##') + ' ATR MEAN REV  ' + str.tostring(down_bottom, format.mintick))
+        else
+            if not na(zDnLoLabel)
+                label.delete(zDnLoLabel)
+                zDnLoLabel := na
+            if not na(zDnHiLabel)
+                label.delete(zDnHiLabel)
+                zDnHiLabel := na
+    else
+        if not na(zLowerBox)
+            box.delete(zLowerBox)
+            zLowerBox := na
+        if not na(zDnLoLine)
+            line.delete(zDnLoLine)
+            zDnLoLine := na
+        if not na(zDnHiLine)
+            line.delete(zDnHiLine)
+            zDnHiLine := na
+        if not na(zDnLoLabel)
+            label.delete(zDnLoLabel)
+            zDnLoLabel := na
+        if not na(zDnHiLabel)
+            label.delete(zDnHiLabel)
+            zDnHiLabel := na
+
+// --- Original alerts: unchanged ---
+alertcondition(snap_up, 'Snapback from oversold', 'ATR% 50SMA left oversold zone')
+alertcondition(bull_div, 'Bullish divergence', 'ATR% 50SMA bullish divergence confirmed')
+alertcondition(bear_div, 'Bearish divergence', 'ATR% 50SMA bearish divergence confirmed')
+alertcondition(early_sig, 'Early bull warning', 'ATR% 50SMA early bullish divergence (unconfirmed)')
+alertcondition(ext_warn, 'Overextended', 'ATR% 50SMA crossed hard limit')
