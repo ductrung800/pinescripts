@@ -1,0 +1,2162 @@
+//@version=6
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// Based on original FTFC indicator by TradeForOpportunity [TFO]
+// Modified and expanded by @SpinTrades with permission under MPL 2.0
+// Combo labels ported from StratAssist by @RickyZane85
+// Additional columns (ADR, %, AS, Combo, IF, Rev, Cont) inspired by StratLab layout
+
+// v2.5.7: Trend Participation Scan — adds explicit 2-2 continuation A/B, Trend Relay A/B scanning, and qualified continuation authority for established uptrends.
+// v2.5.8 DISPLAY REFINEMENT: Playbook Boxes = Current Only / All Historical / Off. Default Current Only.
+// Signal detection, grading, screener outputs and execution authority are unchanged from v2.5.7.
+// Preserves v2.5.4 Holy Grail / Nirvana authority and adds three high-priority playbook families:
+// (1) RECLAIM TRAP: Failed 2D→2U / Failed 2U→2D,
+// (2) INSIDE REVERSAL: 2D→1→2U / 2U→1→2D, and
+// (3) REVSTRAT: 1→2D→2U / 1→2U→2D.
+// Each family has ARMED setup highlighting, A/B/C/X breakout quality, Screener outputs,
+// v2.5.7 adds 2-2 continuation and a compact Trend Participation A/B scan (2-2, 2-1-2, 2-2-2, RT).
+// Daily swing naming, and 60m execution naming. Pattern identity never overrides sponsorship/risk authority.
+// Legacy detailed STRAT matrix + parity table retained as optional validation views.
+
+// Table columns per timeframe row:
+//   ADR  | %      | AS (bar sequence e.g. 3d-1-2u) | Combo (pattern name) | IF (in force ▲/▼) | Rev (failed 2) | Cont (continuity ✓)
+
+indicator("NOW STRAT — Unified Decision Dashboard v2.5.7", "NOW STRAT Unified v2.5.8", true, max_lines_count = 10, max_labels_count = 260, max_boxes_count = 220, calc_bars_count = 500)
+
+get_size(sz) =>
+    switch sz
+        'Tiny'   => size.tiny
+        'Small'  => size.small
+        'Normal' => size.normal
+        'Large'  => size.large
+        'Huge'   => size.huge
+        => size.auto
+
+// ══════════════════════════════════════════════════ INPUTS ══════════════════════════════════════════════════
+
+var g1 = "📍 Timeframes"
+y1  = input.bool(true,  "", inline="1",  group=g1)
+tf1  = input.timeframe("M",   "", inline="1",  group=g1)
+y2  = input.bool(true,  "", inline="1",  group=g1)
+tf2  = input.timeframe("W",   "", inline="1",  group=g1)
+y3  = input.bool(true,  "", inline="2",  group=g1)
+tf3  = input.timeframe("D",   "", inline="2",  group=g1)
+y4  = input.bool(false, "", inline="2",  group=g1)
+tf4  = input.timeframe("240", "", inline="2",  group=g1)
+y5  = input.bool(true,  "", inline="3",  group=g1)
+tf5  = input.timeframe("60",  "", inline="3",  group=g1)
+// Ultra-memory-safe combined build: M/W/D/4H/1H are the available MTF rows.
+// Lower intraday rows remain disabled internally because their 20-series requests
+// are redundant for a swing-trading master script and were the largest memory load.
+bool y6 = false
+string tf6 = "30"
+bool y7 = false
+string tf7 = "15"
+bool y8 = false
+string tf8 = "10"
+bool y9 = false
+string tf9 = "5"
+bool y10 = false
+string tf10 = "1"
+bool y11 = false
+string tf11 = "1W"
+bool y12 = false
+string tf12 = "1M"
+
+var g2 = "⚙️ Calculation Method"
+failed_2_method      = input.string("Either", "Failed Bar Method", options=['Open','Reclaim','Both','Either'], tooltip="Open: Failed when close opposite of open\nReclaim: Failed when inside prev range\nBoth: Must meet both\nEither: Meets either", group=g2)
+ftfc_override_reclaim = input.bool(true, "FTFC Overrides Reclaim", tooltip="When all TFs agree directionally, reclaim signals are ignored.", group=g2)
+
+var g3 = "📊 Table Display"
+tfc_table          = input.bool(false, "Show Expanded STRAT Matrix (Validation)", tooltip="Optional legacy/diagnostic view. The Unified Dashboard is the default decision surface.", group=g3)
+table_position     = input.string('Top Right', "Position", options=['Bottom Center','Bottom Left','Bottom Right','Middle Center','Middle Left','Middle Right','Top Center','Top Left','Top Right'], group=g3)
+show_bar_col       = input.bool(true,  "Show Bar Type Column",     tooltip="Show current bar type: 1, 2U, 2D, 3", group=g3)
+show_pct_col       = input.bool(true,  "Show % Column",            tooltip="% change from timeframe open to current price", group=g3)
+show_as_col        = input.bool(true,  "Show AS Column",           tooltip="Bar sequence (e.g. 2u-1-3) last 3 bars", group=g3)
+show_combo_col     = input.bool(true,  "Show Combo Column",        tooltip="StratAssist combo pattern name", group=g3)
+show_if_col        = input.bool(true,  "Show IF Column",           tooltip="In Force — price outside prior bar range", group=g3)
+show_rev_col       = input.bool(true,  "Show Rev Column",          tooltip="Reversal signal — failed 2", group=g3)
+show_cont_col      = input.bool(true,  "Show Cont Column",         tooltip="Continuity — all TFs above/below open (+/-)", group=g3)
+show_header_row    = input.bool(true,  "Show Header Row",          tooltip="Show column labels in first row", group=g3)
+
+var g4 = "🎨 Styling"
+lbl_size          = get_size(input.string('Normal', "Text Size", inline="SIZE", options=['Auto','Tiny','Small','Normal','Large','Huge'], group=g4))
+text_color        = input.color(color.white,   "",        inline="SIZE",  group=g4)
+bar_1_above_color = input.color(#ffeb3b, "1 Above Open",  group=g4)
+bar_1_below_color = input.color(#ff9800, "1 Below Open",  group=g4)
+bar_2u_color      = input.color(#4caf50, "2U",            group=g4)
+bar_2d_color      = input.color(#f23645, "2D",            group=g4)
+bar_f2u_color     = input.color(#f77c80, "Failed 2U",     group=g4)
+bar_f2d_color     = input.color(#81c784, "Failed 2D",     group=g4)
+bar_3_above_color = input.color(#1b5e20, "3 Above Open",  group=g4)
+bar_3_below_color = input.color(#801922, "3 Below Open",  group=g4)
+header_bg_color   = input.color(#222222, "Header BG",     group=g4)
+inside_bar_hl     = input.color(color.fuchsia, "Inside Bar Highlight", group=g4)
+table_theme       = input.string("Dark", "Table Theme", options=["Dark", "Light"], tooltip="Dark: navy bg for dark chart templates\nLight: white bg for light chart templates", group=g4)
+
+var g5 = "📈 Chart Visualization"
+paint_ftfc             = input.bool(true,  "TFC Candles", inline="FTFC", group=g5)
+ftfc_up_color          = input.color(#4caf50, "", inline="FTFC", group=g5)
+ftfc_dn_color          = input.color(#f23645, "", inline="FTFC", group=g5)
+ftfc_nu_color          = input.color(#808080, "", inline="FTFC", group=g5)
+show_transition_colors = input.bool(true,  "Highlight Failed Bar Transitions", group=g5)
+show_failed_2s_chart   = input.bool(false, "Mark Failed 2s on Chart", group=g5)
+f2u_shape_color        = input.color(#f77c80, "Failed 2U Chart Color", inline="F2C", group=g5)
+f2d_shape_color        = input.color(#81c784, "Failed 2D Chart Color", inline="F2C", group=g5)
+show_flip_arrows       = input.bool(false, "Show Flip Arrows", group=g5)
+
+// ══════════════════════════════════════════════════ SETUP ══════════════════════════════════════════════════
+
+var chart_tf_seconds = timeframe.in_seconds(timeframe.period)
+var tf_seconds = array.new<int>(12)
+if barstate.isfirst
+    tf_arr_temp = array.from(tf1,tf2,tf3,tf4,tf5,tf6,tf7,tf8,tf9,tf10,tf11,tf12)
+    for i = 0 to 11
+        array.set(tf_seconds, i, timeframe.in_seconds(array.get(tf_arr_temp, i)))
+
+// ══════════════════════════════════════════════════ DATA RETRIEVAL ══════════════════════════════════════════
+
+// Retrieve current + 3 historical HTF bars (4 bars total) for combo detection
+get_tf_data(string tf) =>
+    tf_sec = timeframe.in_seconds(tf)
+    if tf_sec == chart_tf_seconds
+        [open, high, low, close,
+         open[1], high[1], low[1], close[1],
+         open[2], high[2], low[2], close[2],
+         open[3], high[3], low[3], close[3],
+         open[4], high[4], low[4], close[4]]
+    else
+        [o0,h0,l0,c0, o1,h1,l1,c1, o2,h2,l2,c2, o3,h3,l3,c3, o4,h4,l4,c4] = request.security(syminfo.tickerid, tf,
+             [open, high, low, close, open[1], high[1], low[1], close[1], open[2], high[2], low[2], close[2], open[3], high[3], low[3], close[3], open[4], high[4], low[4], close[4]],
+             barmerge.gaps_off, barmerge.lookahead_on, calc_bars_count = 7)
+        adj = not barstate.isrealtime
+        if adj
+            [o0[1],h0[1],l0[1],c0[1], o1[1],h1[1],l1[1],c1[1], o2[1],h2[1],l2[1],c2[1], o3[1],h3[1],l3[1],c3[1], o4[1],h4[1],l4[1],c4[1]]
+        else
+            [o0,h0,l0,c0, o1,h1,l1,c1, o2,h2,l2,c2, o3,h3,l3,c3, o4,h4,l4,c4]
+
+[o1,h1,l1,c1, o1p,h1p,l1p,c1p, o1b2,h1b2,l1b2,c1b2, o1b3,h1b3,l1b3,c1b3, o1b4,h1b4,l1b4,c1b4] = get_tf_data(tf1)
+[o2,h2,l2,c2, o2p,h2p,l2p,c2p, o2b2,h2b2,l2b2,c2b2, o2b3,h2b3,l2b3,c2b3, o2b4,h2b4,l2b4,c2b4] = get_tf_data(tf2)
+[o3,h3,l3,c3, o3p,h3p,l3p,c3p, o3b2,h3b2,l3b2,c3b2, o3b3,h3b3,l3b3,c3b3, o3b4,h3b4,l3b4,c3b4] = get_tf_data(tf3)
+[o4,h4,l4,c4, o4p,h4p,l4p,c4p, o4b2,h4b2,l4b2,c4b2, o4b3,h4b3,l4b3,c4b3, o4b4,h4b4,l4b4,c4b4] = get_tf_data(tf4)
+[o5,h5,l5,c5, o5p,h5p,l5p,c5p, o5b2,h5b2,l5b2,c5b2, o5b3,h5b3,l5b3,c5b3, o5b4,h5b4,l5b4,c5b4] = get_tf_data(tf5)
+empty_tf_data() =>
+    [float(na), float(na), float(na), float(na),
+     float(na), float(na), float(na), float(na),
+     float(na), float(na), float(na), float(na),
+     float(na), float(na), float(na), float(na),
+     float(na), float(na), float(na), float(na)]
+
+[o6,h6,l6,c6, o6p,h6p,l6p,c6p, o6b2,h6b2,l6b2,c6b2, o6b3,h6b3,l6b3,c6b3, o6b4,h6b4,l6b4,c6b4] = empty_tf_data()
+[o7,h7,l7,c7, o7p,h7p,l7p,c7p, o7b2,h7b2,l7b2,c7b2, o7b3,h7b3,l7b3,c7b3, o7b4,h7b4,l7b4,c7b4] = empty_tf_data()
+[o8,h8,l8,c8, o8p,h8p,l8p,c8p, o8b2,h8b2,l8b2,c8b2, o8b3,h8b3,l8b3,c8b3, o8b4,h8b4,l8b4,c8b4] = empty_tf_data()
+[o9,h9,l9,c9, o9p,h9p,l9p,c9p, o9b2,h9b2,l9b2,c9b2, o9b3,h9b3,l9b3,c9b3, o9b4,h9b4,l9b4,c9b4] = empty_tf_data()
+[o10,h10,l10,c10, o10p,h10p,l10p,c10p, o10b2,h10b2,l10b2,c10b2, o10b3,h10b3,l10b3,c10b3, o10b4,h10b4,l10b4,c10b4] = empty_tf_data()
+[o11,h11,l11,c11, o11p,h11p,l11p,c11p, o11b2,h11b2,l11b2,c11b2, o11b3,h11b3,l11b3,c11b3, o11b4,h11b4,l11b4,c11b4] = empty_tf_data()
+[o12,h12,l12,c12, o12p,h12p,l12p,c12p, o12b2,h12b2,l12b2,c12b2, o12b3,h12b3,l12b3,c12b3, o12b4,h12b4,l12b4,c12b4] = empty_tf_data()
+
+// ══════════════════════════════════════════════════ HELPER FUNCTIONS ══════════════════════════════════════
+
+get_table_pos(pos) =>
+    switch pos
+        "Bottom Center" => position.bottom_center
+        "Bottom Left"   => position.bottom_left
+        "Bottom Right"  => position.bottom_right
+        "Middle Center" => position.middle_center
+        "Middle Left"   => position.middle_left
+        "Middle Right"  => position.middle_right
+        "Top Center"    => position.top_center
+        "Top Left"      => position.top_left
+        "Top Right"     => position.top_right
+        => position.top_right
+
+is_valid_prev(float hp, float lp) => not (na(hp) or na(lp)) and hp >= lp
+is_valid_ohlc(float o, float h, float l, float c) => not (na(o) or na(h) or na(l) or na(c)) and h >= l
+
+// Single bar classification vs previous bar (uppercase, with gap detection matching reference)
+classify_bar(float _h, float _l, float _hp, float _lp) =>
+    string r = "?"
+    if na(_h) or na(_l) or na(_hp) or na(_lp)
+        r
+    else
+        hx = _h > _hp
+        lx = _l < _lp
+        if hx and lx
+            r := "3"
+        else if hx
+            r := "2U"
+        else if lx
+            r := "2D"
+        else
+            r := "1"
+    r
+
+// Short display label for a bar type with direction implied by close vs open
+// Precise display label for a bar type with direction and color modifiers
+classify_bar_display(float _h, float _l, float _hp, float _lp, float _o, float _c) =>
+    string bt = classify_bar(_h, _l, _hp, _lp)
+    string color_mod = _c > _o ? "G" : _c < _o ? "R" : ""
+    
+    if bt == "2U"
+        "2u" + color_mod
+    else if bt == "2D"
+        "2d" + color_mod
+    else
+        bt
+
+// Bar sequence string for AS column: last 3 bars separated by dashes (oldest-middle-newest)
+// Bar sequence string for AS column: last 3 bars separated by dashes (oldest-middle-newest)
+get_as_string(float _h, float _l, float _hp, float _lp, float _hp2, float _lp2, float _hp3, float _lp3, float _o, float _c, float _op, float _cp, float _op2, float _cp2) =>
+    f1 = classify_bar_display(_h, _l, _hp, _lp, _o, _c)
+    f2 = classify_bar_display(_hp, _lp, _hp2, _lp2, _op, _cp)
+    f3 = classify_bar_display(_hp2, _lp2, _hp3, _lp3, _op2, _cp2)
+    f3 + "-" + f2 + "-" + f1
+
+// StratAssist combo pattern detection (returns [label, is_bullish])
+get_combo(float _h, float _l, float _hp, float _lp, float _hp2, float _lp2, float _hp3, float _lp3, float _hp4, float _lp4) =>
+    b1 = classify_bar(_h, _l, _hp, _lp)
+    b2 = classify_bar(_hp, _lp, _hp2, _lp2)
+    b3 = classify_bar(_hp2, _lp2, _hp3, _lp3)
+    b4 = classify_bar(_hp3, _lp3, _hp4, _lp4)
+    string lbl = ""
+    bool bull = false
+    // 4-bar Randy Jackson patterns
+    if b4=="2U" and b3=="2U" and b2=="2D" and b1=="2U"
+        lbl := "2222 Bull RJ"
+        bull := true
+    else if b4=="2D" and b3=="2D" and b2=="2U" and b1=="2D"
+        lbl := "2222 Bear RJ"
+        bull := false
+    // 3-bar patterns
+    else if b3=="2D" and b2=="2D" and b1=="2D"
+        lbl := "222 Bear"
+        bull := false
+    else if b3=="2U" and b2=="2U" and b1=="2U"
+        lbl := "222 Bull"
+        bull := true
+    else if b3=="2D" and b2=="1"  and b1=="2D"
+        lbl := "212 Bear MM"
+        bull := false
+    else if b3=="2U" and b2=="1"  and b1=="2U"
+        lbl := "212 Bull MM"
+        bull := true
+    else if b3=="3"  and b2=="2U" and b1=="2D"
+        lbl := "322 Bear Rev"
+        bull := false
+    else if b3=="3"  and b2=="2D" and b1=="2U"
+        lbl := "322 Bull Rev"
+        bull := true
+    else if b3=="3"  and b2=="1"  and b1=="2D"
+        lbl := "312 Bear Rev"
+        bull := false
+    else if b3=="3"  and b2=="1"  and b1=="2U"
+        lbl := "312 Bull Rev"
+        bull := true
+    else if b3=="2U" and b2=="1"  and b1=="2D"
+        lbl := "212 Bear Rev"
+        bull := false
+    else if b3=="2D" and b2=="1"  and b1=="2U"
+        lbl := "212 Bull Rev"
+        bull := true
+    else if b3=="1"  and b2=="2U" and b1=="2D"
+        lbl := "122 Bear Rev"
+        bull := false
+    else if b3=="1"  and b2=="2D" and b1=="2U"
+        lbl := "122 Bull Rev"
+        bull := true
+    // 2-3-2 reversal: directional move, outside bar, then break in the opposite direction.
+    // Must be checked before the generic "32" 2-bar check below, since b2="3" would
+    // otherwise always match the shorter 32 pattern first.
+    else if b3=="2U" and b2=="3"  and b1=="2D"
+        lbl := "232 Bear Rev"
+        bull := false
+    else if b3=="2D" and b2=="3"  and b1=="2U"
+        lbl := "232 Bull Rev"
+        bull := true
+    // 1-3-2: inside bar, outside bar, then a directional break. Also treated as a
+    // reversal/continuation trigger and must precede the generic "32" 2-bar check.
+    else if b3=="1"  and b2=="3"  and b1=="2D"
+        lbl := "132 Bear Rev"
+        bull := false
+    else if b3=="1"  and b2=="3"  and b1=="2U"
+        lbl := "132 Bull Rev"
+        bull := true
+    // 2-1-3: directional move, inside bar, then an outside bar (breaks both sides).
+    // An outside bar has no unambiguous direction from highs/lows alone, so bias is
+    // inherited from the initiating "2" bar (b3), consistent with Rob Smith's framing
+    // of 2-1-3 as a continuation/expansion of the prior directional move.
+    else if b3=="2U" and b2=="1"  and b1=="3"
+        lbl := "213 Bull Cont"
+        bull := true
+    else if b3=="2D" and b2=="1"  and b1=="3"
+        lbl := "213 Bear Cont"
+        bull := false
+    // 2-2 continuation: two consecutive directional 2s in the same direction.
+    // This is a trend-participation pattern, not a reversal.
+    else if b2=="2U" and b1=="2U"
+        lbl := "22 Bull Cont"
+        bull := true
+    else if b2=="2D" and b1=="2D"
+        lbl := "22 Bear Cont"
+        bull := false
+    else if b2=="2U" and b1=="2D"
+        lbl := "22 Bear Rev"
+        bull := false
+    else if b2=="2D" and b1=="2U"
+        lbl := "22 Bull Rev"
+        bull := true
+    else if b2=="3"  and b1=="2D"
+        lbl := "32 Bear Rev"
+        bull := false
+    else if b2=="3"  and b1=="2U"
+        lbl := "32 Bull Rev"
+        bull := true
+    [lbl, bull]
+
+// STRAT combo quality is deliberately separate from canonical pattern identity.
+// 4=A confirmed/strong, 3=B valid, 2=C weak, 1=X failed hold, 0=none.
+combo_quality(float _o, float _h, float _l, float _c, float _hp, float _lp, bool _bull, float _strong_close_pct) =>
+    float rng = math.max(_h - _l, syminfo.mintick)
+    bool triggered = _bull ? _h > _hp : _l < _lp
+    bool held = _bull ? _c > _hp : _c < _lp
+    bool dir_ok = _bull ? _c > _o : _c < _o
+    float close_loc = _bull ? (_c - _l) / rng * 100.0 : (_h - _c) / rng * 100.0
+    bool strong_close = close_loc >= _strong_close_pct
+    int grade = 0
+    if triggered
+        if not held
+            grade := 1
+        else if dir_ok and strong_close
+            grade := 4
+        else if dir_ok or strong_close
+            grade := 3
+        else
+            grade := 2
+    [grade, held, dir_ok, close_loc]
+
+combo_quality_letter(int grade) =>
+    grade == 4 ? "A" : grade == 3 ? "B" : grade == 2 ? "C" : grade == 1 ? "X" : ""
+
+combo_quality_pass(int grade, string mode) =>
+    bool pass = false
+    if mode == "Canonical"
+        pass := grade > 0
+    else if mode == "Confirmed"
+        pass := grade >= 3
+    else
+        pass := grade == 4
+    pass
+
+// Historical Failed-2 helpers used by the Reclaim Trap playbook.
+// They honor the selected Failed Bar Method but intentionally do NOT apply the FTFC
+// reclaim override: playbook identity describes what the bar itself did historically.
+playbook_failed_2d(float _h, float _l, float _o, float _c, float _hp, float _lp) =>
+    string bt = classify_bar(_h, _l, _hp, _lp)
+    bool open_fail = bt == "2D" and _c > _o
+    bool reclaim_fail = bt == "2D" and _c >= _lp and _c <= _hp
+    failed_2_method == "Open" ? open_fail : failed_2_method == "Reclaim" ? reclaim_fail : failed_2_method == "Both" ? (open_fail and reclaim_fail) : (open_fail or reclaim_fail)
+
+playbook_failed_2u(float _h, float _l, float _o, float _c, float _hp, float _lp) =>
+    string bt = classify_bar(_h, _l, _hp, _lp)
+    bool open_fail = bt == "2U" and _c < _o
+    bool reclaim_fail = bt == "2U" and _c >= _lp and _c <= _hp
+    failed_2_method == "Open" ? open_fail : failed_2_method == "Reclaim" ? reclaim_fail : failed_2_method == "Both" ? (open_fail and reclaim_fail) : (open_fail or reclaim_fail)
+
+playbook_name(int id) =>
+    switch id
+        1 => "RECLAIM TRAP"
+        2 => "INSIDE REVERSAL"
+        3 => "REVSTRAT"
+        => ""
+
+playbook_short(int id) =>
+    switch id
+        1 => "RT"
+        2 => "IR"
+        3 => "RVS"
+        => ""
+
+// Failed bar check (simplified, both direction)
+check_failed(float _hp, float _lp, float _h, float _l, float _o, bool _ftfc_up, bool _ftfc_dn) =>
+    is_f2u = false
+    is_f2d = false
+    if not is_valid_prev(_hp, _lp) or na(_h) or na(_l) or na(_o)
+        [false, false]
+    else
+        above = close > _o
+        inside_range = close <= _hp and close >= _lp
+        ignore_rec = ftfc_override_reclaim and (_ftfc_up or _ftfc_dn)
+        hx = _h > _hp
+        lx = _l < _lp
+        is_2u = hx and not lx
+        is_2d = lx and not hx
+        if failed_2_method == "Open"
+            is_f2u := is_2u and not above
+            is_f2d := is_2d and above
+        else if failed_2_method == "Reclaim"
+            if not ignore_rec
+                is_f2u := is_2u and inside_range
+                is_f2d := is_2d and inside_range
+        else if failed_2_method == "Both"
+            is_f2u := is_2u and not above and (not ignore_rec and inside_range)
+            is_f2d := is_2d and above and (not ignore_rec and inside_range)
+        else // Either
+            is_f2u := is_2u and (not above or (not ignore_rec and inside_range))
+            is_f2d := is_2d and (above or (not ignore_rec and inside_range))
+        [is_f2u, is_f2d]
+
+check_bullish_ftfc(_hp, _lp, _h, _l, _o, _ftfc_up, _ftfc_dn) =>
+    if not is_valid_prev(_hp, _lp) or na(_h) or na(_l) or na(_o)
+        false
+    else
+        above = close > _o
+        hx = _h > _hp
+        lx = _l < _lp
+        is_2u = hx and not lx
+        is_2d = lx and not hx
+        is_inside = not hx and not lx
+        inside_range = close <= _hp and close >= _lp
+        ignore_rec = ftfc_override_reclaim and (_ftfc_up or _ftfc_dn)
+        is_failed = false
+        if is_2u or is_2d
+            if failed_2_method == "Open"
+                is_failed := (is_2u and not above) or (is_2d and above)
+            else if failed_2_method == "Reclaim"
+                is_failed := not ignore_rec and inside_range
+            else if failed_2_method == "Both"
+                is_failed := ((is_2u and not above) or (is_2d and above)) and (not ignore_rec and inside_range)
+            else
+                is_failed := ((is_2u and not above) or (is_2d and above)) or (not ignore_rec and inside_range)
+        if is_inside
+            above
+        else if is_2u
+            not is_failed
+        else if is_2d
+            is_failed
+        else
+            above // outside bar
+
+fmt_pct(float v) =>
+    if na(v)
+        "–"
+    else
+        sign = v >= 0 ? "+" : ""
+        sign + str.format("{0,number,0.00}", v) + "%"
+
+// ══════════════════════════════════════════════════ ANALYSIS ══════════════════════════════════════════════
+
+var tf_arr  = array.from(tf1,tf2,tf3,tf4,tf5,tf6,tf7,tf8,tf9,tf10,tf11,tf12)
+var use_arr = array.from(y1,y2,y3,y4,y5,y6,y7,y8,y9,y10,y11,y12)
+
+o_arr  = array.from(o1,o2,o3,o4,o5,o6,o7,o8,o9,o10,o11,o12)
+h_arr  = array.from(h1,h2,h3,h4,h5,h6,h7,h8,h9,h10,h11,h12)
+l_arr  = array.from(l1,l2,l3,l4,l5,l6,l7,l8,l9,l10,l11,l12)
+c_arr  = array.from(c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,c12)
+op_arr  = array.from(o1p,o2p,o3p,o4p,o5p,o6p,o7p,o8p,o9p,o10p,o11p,o12p)
+cp_arr  = array.from(c1p,c2p,c3p,c4p,c5p,c6p,c7p,c8p,c9p,c10p,c11p,c12p)
+ob2_arr = array.from(o1b2,o2b2,o3b2,o4b2,o5b2,o6b2,o7b2,o8b2,o9b2,o10b2,o11b2,o12b2)
+cb2_arr = array.from(c1b2,c2b2,c3b2,c4b2,c5b2,c6b2,c7b2,c8b2,c9b2,c10b2,c11b2,c12b2)
+hp_arr = array.from(h1p,h2p,h3p,h4p,h5p,h6p,h7p,h8p,h9p,h10p,h11p,h12p)
+lp_arr = array.from(l1p,l2p,l3p,l4p,l5p,l6p,l7p,l8p,l9p,l10p,l11p,l12p)
+hb2_arr = array.from(h1b2,h2b2,h3b2,h4b2,h5b2,h6b2,h7b2,h8b2,h9b2,h10b2,h11b2,h12b2)
+lb2_arr = array.from(l1b2,l2b2,l3b2,l4b2,l5b2,l6b2,l7b2,l8b2,l9b2,l10b2,l11b2,l12b2)
+hb3_arr = array.from(h1b3,h2b3,h3b3,h4b3,h5b3,h6b3,h7b3,h8b3,h9b3,h10b3,h11b3,h12b3)
+lb3_arr = array.from(l1b3,l2b3,l3b3,l4b3,l5b3,l6b3,l7b3,l8b3,l9b3,l10b3,l11b3,l12b3)
+hb4_arr = array.from(h1b4,h2b4,h3b4,h4b4,h5b4,h6b4,h7b4,h8b4,h9b4,h10b4,h11b4,h12b4)
+lb4_arr = array.from(l1b4,l2b4,l3b4,l4b4,l5b4,l6b4,l7b4,l8b4,l9b4,l10b4,l11b4,l12b4)
+
+var tfc_arr      = array.new<bool>(12, false)
+var f2u_arr      = array.new<bool>(12, false)
+var f2d_arr      = array.new<bool>(12, false)
+var rec_arr      = array.new<bool>(12, false)
+var inside_arr   = array.new<bool>(12, false)
+var if_up_arr    = array.new<bool>(12, false)
+var if_dn_arr    = array.new<bool>(12, false)
+var valid_arr    = array.new<bool>(12, false)
+
+if barstate.isfirst
+    for i = 0 to 11
+        is_v = array.get(use_arr, i) and array.get(tf_seconds, i) >= chart_tf_seconds
+        array.set(valid_arr, i, is_v)
+
+// Classic FTFC (vs open)
+ftfc_up_classic = true
+ftfc_dn_classic = true
+for i = 0 to 11
+    if array.get(valid_arr, i)
+        _o = array.get(o_arr, i)
+        if not na(_o)
+            if close > _o
+                ftfc_dn_classic := false
+            else
+                ftfc_up_classic := false
+
+// Main logic loop
+inside_bar_count = 0
+fail_bear_count = 0
+fail_bull_count = 0
+if_up_count = 0
+if_dn_count = 0
+ftfc_up = true
+ftfc_dn = true
+
+for i = 0 to 11
+    if array.get(use_arr, i)
+        _hp = array.get(hp_arr, i)
+        _lp = array.get(lp_arr, i)
+        _h  = array.get(h_arr,  i)
+        _l  = array.get(l_arr,  i)
+        _o  = array.get(o_arr,  i)
+        if is_valid_prev(_hp, _lp) and not na(_h) and not na(_l) and not na(_o)
+            tfc = check_bullish_ftfc(_hp, _lp, _h, _l, _o, ftfc_up_classic, ftfc_dn_classic)
+            array.set(tfc_arr, i, tfc)
+            [f2u, f2d] = check_failed(_hp, _lp, _h, _l, _o, ftfc_up_classic, ftfc_dn_classic)
+            array.set(f2u_arr, i, f2u)
+            array.set(f2d_arr, i, f2d)
+            rec = close <= _hp and close >= _lp
+            array.set(rec_arr, i, rec)
+            ins = _h <= _hp and _l >= _lp
+            array.set(inside_arr, i, ins)
+            ifu = close > _hp
+            ifd = close < _lp
+            array.set(if_up_arr, i, ifu)
+            array.set(if_dn_arr, i, ifd)
+            if array.get(valid_arr, i)
+                if tfc
+                    ftfc_dn := false
+                else
+                    ftfc_up := false
+                if ins
+                    inside_bar_count += 1
+                if f2u
+                    fail_bear_count += 1
+                if f2d
+                    fail_bull_count += 1
+                if ifu
+                    if_up_count += 1
+                else if ifd
+                    if_dn_count += 1
+
+// ══════════════════════════════════════════════════ TREND FLIP ══════════════════════════════════════════════
+
+var int lastTrend = 0
+currTrend = ftfc_up ? 1 : ftfc_dn ? -1 : 0
+bool flipToGreen    = currTrend == 1  and lastTrend != 1
+bool flipToRed      = currTrend == -1 and lastTrend != -1
+bool flipToConflict = currTrend == 0  and lastTrend != 0
+bool anyFlip        = currTrend != lastTrend
+no_inside           = inside_bar_count == 0
+lastTrend := currTrend
+
+plotshape(show_flip_arrows and flipToGreen, title="Flip Up",   style=shape.triangleup,   location=location.belowbar, color=ftfc_up_color, size=size.small)
+plotshape(show_flip_arrows and flipToRed,   title="Flip Down", style=shape.triangledown, location=location.abovebar, color=ftfc_dn_color, size=size.small)
+
+alertcondition(flipToGreen,             title="FTFC Up",                  message="{{ticker}} {{interval}} – FTFC UP")
+alertcondition(flipToRed,               title="FTFC Down",                message="{{ticker}} {{interval}} – FTFC DOWN")
+alertcondition(flipToGreen and no_inside, title="FTFC Up (No Inside)",    message="{{ticker}} {{interval}} – FTFC UP w/ NONE INSIDE")
+alertcondition(flipToRed   and no_inside, title="FTFC Down (No Inside)",  message="{{ticker}} {{interval}} – FTFC DOWN w/ NONE INSIDE")
+alertcondition(flipToConflict,          title="Flip to Conflict",         message="{{ticker}} {{interval}} – TFC conflict")
+alertcondition(anyFlip,                 title="Any TFC Flip",             message="{{ticker}} {{interval}} – TFC state changed")
+
+// ══════════════════════════════════════════════════ BAR COLORING ══════════════════════════════════════════════
+
+ftfc_changed_up = ftfc_up and not ftfc_up[1]
+ftfc_changed_dn = ftfc_dn and not ftfc_dn[1]
+f2_transition_up = ftfc_changed_up and fail_bull_count > 0
+f2_transition_dn = ftfc_changed_dn and fail_bear_count > 0
+
+color bar_color = na
+if paint_ftfc
+    bar_color := show_transition_colors and f2_transition_up ? bar_f2d_color :
+                 show_transition_colors and f2_transition_dn ? bar_f2u_color :
+                 ftfc_up ? ftfc_up_color : ftfc_dn ? ftfc_dn_color : ftfc_nu_color
+barcolor(bar_color)
+
+// ══════════════════════════════════════════════════ CHART FAILED 2s ══════════════════════════════════════════
+
+is_c2u = false
+is_c2d = false
+is_cf2u = false
+is_cf2d = false
+if is_valid_ohlc(open,high,low,close) and is_valid_ohlc(open[1],high[1],low[1],close[1])
+    hx = high > high[1]
+    lx = low < low[1]
+    gap_up = open > high[1]
+    gap_dn = open < low[1]
+    if gap_up
+        is_c2u := low >= low[1]
+    else if gap_dn
+        is_c2d := high <= high[1]
+    else
+        if hx and not lx
+            is_c2u := true
+        else if lx and not hx
+            is_c2d := true
+    if is_c2u or is_c2d
+        above = close > open
+        ins   = close <= high[1] and close >= low[1]
+        ign   = ftfc_override_reclaim and (ftfc_up_classic or ftfc_dn_classic)
+        if failed_2_method == "Open"
+            is_cf2u := is_c2u and not above
+            is_cf2d := is_c2d and above
+        else if failed_2_method == "Reclaim"
+            if not ign
+                is_cf2u := is_c2u and ins
+                is_cf2d := is_c2d and ins
+        else if failed_2_method == "Both"
+            is_cf2u := is_c2u and not above and (not ign and ins)
+            is_cf2d := is_c2d and above     and (not ign and ins)
+        else
+            is_cf2u := is_c2u and (not above or (not ign and ins))
+            is_cf2d := is_c2d and (above     or (not ign and ins))
+
+plotshape(show_failed_2s_chart and is_cf2u, title="F2U", style=shape.labeldown, location=location.abovebar, color=f2u_shape_color, size=size.tiny, text="F", textcolor=color.white)
+plotshape(show_failed_2s_chart and is_cf2d, title="F2D", style=shape.labelup,   location=location.belowbar, color=f2d_shape_color, size=size.tiny, text="F", textcolor=color.white)
+
+
+// ══════════════════════════════════════════════════ CHART BAR LABELS ══════════════════════════════════════
+
+var g6 = "🏷️ Chart Labels"
+show_bar_labels = input.bool(true, "Show Strat Labels on Chart", group=g6)
+
+// --- 1 Bar Controls ---
+lbl_sz_1_in   = input.string('Normal', "1 Label Size", options=['Auto','Tiny','Small','Normal','Large','Huge'], group=g6, inline="l1")
+lbl_pos_1_in  = input.string('Above Bar', "", options=['Above Bar','Below Bar'], group=g6, inline="l1")
+lbl_c_1_up    = input.color(#ffeb3b, "", inline="l1", group=g6, tooltip="1 Above Open Color")
+lbl_c_1_dn    = input.color(#ff9800, "", inline="l1", group=g6, tooltip="1 Below Open Color")
+
+// --- 2u Bar Controls ---
+lbl_sz_2u_in  = input.string('Tiny', "2u Label Size", options=['Auto','Tiny','Small','Normal','Large','Huge'], group=g6, inline="l2u")
+lbl_pos_2u_in = input.string('Above Bar', "", options=['Above Bar','Below Bar'], group=g6, inline="l2u")
+lbl_c_2u_g    = input.color(#4caf50, "", inline="l2u", group=g6, tooltip="2u Green Color")
+lbl_c_2u_r    = input.color(#f23645, "", inline="l2u", group=g6, tooltip="2u Red Color")
+
+// --- 2d Bar Controls ---
+lbl_sz_2d_in  = input.string('Tiny', "2d Label Size", options=['Auto','Tiny','Small','Normal','Large','Huge'], group=g6, inline="l2d")
+lbl_pos_2d_in = input.string('Below Bar', "", options=['Above Bar','Below Bar'], group=g6, inline="l2d")
+lbl_c_2d_g    = input.color(#4caf50, "", inline="l2d", group=g6, tooltip="2d Green Color")
+lbl_c_2d_r    = input.color(#f23645, "", inline="l2d", group=g6, tooltip="2d Red Color")
+
+// --- 3 Bar Controls ---
+lbl_sz_3_in   = input.string('Normal', "3 Label Size", options=['Auto','Tiny','Small','Normal','Large','Huge'], group=g6, inline="l3")
+lbl_pos_3_in  = input.string('Above Bar', "", options=['Above Bar','Below Bar'], group=g6, inline="l3")
+lbl_c_3_up    = input.color(#1b5e20, "", inline="l3", group=g6, tooltip="3 Above Open Color")
+lbl_c_3_dn    = input.color(#801922, "", inline="l3", group=g6, tooltip="3 Below Open Color")
+
+// Convert string selections to Pine Script native size/position types
+lbl_sz_1  = get_size(lbl_sz_1_in)
+lbl_sz_2u = get_size(lbl_sz_2u_in)
+lbl_sz_2d = get_size(lbl_sz_2d_in)
+lbl_sz_3  = get_size(lbl_sz_3_in)
+
+lbl_yloc_1  = lbl_pos_1_in  == 'Above Bar' ? yloc.abovebar : yloc.belowbar
+lbl_yloc_2u = lbl_pos_2u_in == 'Above Bar' ? yloc.abovebar : yloc.belowbar
+lbl_yloc_2d = lbl_pos_2d_in == 'Above Bar' ? yloc.abovebar : yloc.belowbar
+lbl_yloc_3  = lbl_pos_3_in  == 'Above Bar' ? yloc.abovebar : yloc.belowbar
+
+// Evaluate the current chart timeframe's candles
+chart_label = classify_bar_display(high, low, high[1], low[1], open, close)
+
+if show_bar_labels and chart_label != "?" and bar_index >= last_bar_index - 150
+    string txt      = chart_label
+    string lbl_sz   = lbl_sz_1
+    string lbl_yloc = lbl_yloc_1
+    color lbl_c     = na
+
+    if chart_label == "1"
+        lbl_sz   := lbl_sz_1
+        lbl_yloc := lbl_yloc_1
+        lbl_c    := close > open ? lbl_c_1_up : lbl_c_1_dn
+        
+    else if chart_label == "3"
+        lbl_sz   := lbl_sz_3
+        lbl_yloc := lbl_yloc_3
+        lbl_c    := close > open ? lbl_c_3_up : lbl_c_3_dn
+        
+    else if str.contains(chart_label, "2u")
+        txt      := chart_label + "\n▲"
+        lbl_sz   := lbl_sz_2u
+        lbl_yloc := lbl_yloc_2u
+        lbl_c    := str.contains(chart_label, "G") ? lbl_c_2u_g : lbl_c_2u_r
+        
+    else if str.contains(chart_label, "2d")
+        txt      := "▼\n" + chart_label
+        lbl_sz   := lbl_sz_2d
+        lbl_yloc := lbl_yloc_2d
+        lbl_c    := str.contains(chart_label, "G") ? lbl_c_2d_g : lbl_c_2d_r
+
+    float _y = lbl_yloc == yloc.abovebar ? high : low
+
+    // Draw standard labels using label.new
+    label.new(bar_index, _y, text=txt, textcolor=lbl_c, style=label.style_none, yloc=lbl_yloc, size=lbl_sz)
+// ══════════════════════════════════════════════════ PATTERN RECOGNITION (CHART) ══════════════════════
+
+var g7 = "🎯 'THESTRAT' PATTERNS"
+show_patterns = input.bool(true,  "See Patterns",             group=g7)
+combo_quality_mode = input.string("Confirmed", "Combo Signal Quality", options=["Canonical","Confirmed","Strict"], tooltip="Canonical: preserve every structural combo.\nConfirmed: require trigger hold plus directional-body or strong-close evidence (A/B).\nStrict: only Grade A — trigger held, directional body, and strong close.", group=g7)
+combo_strong_close_pct = input.float(65.0, "Grade A: Directional Close %", minval=50.0, maxval=90.0, step=5.0, tooltip="Bull: close must finish this far up the candle range. Bear: mirrored from the high.", group=g7)
+show_combo_grade = input.bool(true, "Show A/B/C/X Quality", group=g7, inline="q")
+show_actionable_combo_only = input.bool(false, "Actionable Quality Only", tooltip="Off: keep weak/failed canonical patterns visible for study, but mark them C/X. On: show only patterns accepted by the selected Combo Signal Quality mode.", group=g7, inline="q")
+show_holy_grail_31 = input.bool(true, "Show Holy Grail 3-1 Armed", tooltip="Marks an Outside-3 followed by an Inside-1 as an armed Holy Grail setup. A subsequent bullish 2U is the 3-1-2 bullish breakout handoff.", group=g7)
+playbook_box_mode = input.string("Current Only", "Playbook Boxes", options=["Current Only","All Historical","Off"], tooltip="Current Only (default): show only a setup that is armed on the current bar. All Historical: retain historical HG/Nirvana/RT/IR/RVS setup boxes for study. Off: no setup boxes. Breakout/quality labels remain available in all modes.", group=g7)
+show_hg_nirvana_zones = input.bool(true, "Include Holy Grail / Nirvana Boxes", tooltip="Applies the Playbook Boxes mode to Holy Grail 3→1 and Nirvana 1→3 pairs.", group=g7)
+hg_zone_color = input.color(#2962ff, "Holy Grail 3→1 Color", group=g7, inline="hgn")
+nirvana_zone_color = input.color(#4caf50, "Nirvana 1→3 Color", group=g7, inline="hgn")
+show_nirvana_13 = input.bool(true, "Show Nirvana 1-3", tooltip="Marks an Inside-1 followed by an Outside-3 as Nirvana, matching the supplied legacy script.", group=g7)
+show_playbook_zones = input.bool(true, "Include RT / IR / RevStrat Boxes", tooltip="Applies the Playbook Boxes mode to Reclaim Trap, Inside Reversal and RevStrat setup structures.", group=g7)
+show_playbook_armed = input.bool(true, "Show RT / IR / RevStrat ARMED Labels", tooltip="Shows the pre-trigger setup state. ARMED is not an entry; the next directional 2 must break and then pass A/B/C/X quality.", group=g7)
+reduce_playbook_label_clutter = input.bool(true, "Reduce Playbook Label Clutter", tooltip="Shows only one RT/IR/RVS ARMED text label per bar and suppresses ARMED text on a bar that is already a breakout trigger. Setup boxes remain visible.", group=g7)
+show_failure_protect = input.bool(true, "Show Failed-Break EXIT / PROTECT", tooltip="If a qualified bullish HG/RJ/RT/IR/RevStrat breakout is immediately followed by a bearish 2D, mark EXIT / PROTECT. This is risk-management evidence, not automatic short permission.", group=g7)
+rt_zone_color = input.color(#ffb300, "Reclaim Trap Color", group=g7, inline="pbz")
+ir_zone_color = input.color(#00bcd4, "Inside Reversal Color", group=g7, inline="pbz")
+rs_zone_color = input.color(#9c27b0, "RevStrat Color", group=g7, inline="pbz")
+show_212_rev  = input.bool(true,  "2-1-2 Reversal",           group=g7, inline="p1")
+show_212_cont = input.bool(true,  "2-1-2 Continuation",       group=g7, inline="p1")
+show_22_rev   = input.bool(true,  "2-2 Reversal",             group=g7, inline="p2")
+show_22_cont  = input.bool(true,  "2-2 Continuation",         group=g7, inline="p2")
+show_312_rev  = input.bool(true,  "3-1-2 Reversal",           group=g7, inline="p3")
+show_322_rev  = input.bool(true,  "3-2-2 Reversal",           group=g7, inline="p3")
+show_32_rev   = input.bool(true,  "3-2 Reversal",             group=g7, inline="p4")
+show_122_rev  = input.bool(true,  "1-2-2 RevStrat Reversal",  group=g7, inline="p5")
+show_222_rj   = input.bool(true,  "2-2-2 Randy Jackson",      group=g7, inline="p5")
+show_232_rev  = input.bool(true,  "2-3-2 Reversal",           group=g7, inline="p6")
+show_213_cont = input.bool(true,  "2-1-3 Continuation",       group=g7, inline="p6")
+show_132_rev  = input.bool(true,  "1-3-2 Reversal",           group=g7, inline="p7")
+
+// Fetch the canonical combo for the current chart timeframe, then grade the final trigger bar.
+[chart_combo_lbl, chart_combo_bull] = get_combo(high, low, high[1], low[1], high[2], low[2], high[3], low[3], high[4], low[4])
+[chart_combo_grade, chart_combo_held, chart_combo_dir_ok, chart_combo_close_loc] = combo_quality(open, high, low, close, high[1], low[1], chart_combo_bull, combo_strong_close_pct)
+bool chart_combo_quality_pass = chart_combo_lbl != "" and combo_quality_pass(chart_combo_grade, combo_quality_mode)
+string chart_combo_grade_txt = combo_quality_letter(chart_combo_grade)
+
+// Holy Grail setup identity: prior bar is Outside-3, current bar is Inside-1.
+// This is setup state only; it becomes a bullish 3-1-2 trigger only after an upside 2U breakout.
+bool chart_hg_31_armed = classify_bar(high, low, high[1], low[1]) == "1" and classify_bar(high[1], low[1], high[2], low[2]) == "3"
+// Legacy Nirvana identity from the supplied script: Inside-1 followed by Outside-3.
+bool chart_nirvana_13 = classify_bar(high, low, high[1], low[1]) == "3" and classify_bar(high[1], low[1], high[2], low[2]) == "1"
+bool playbook_boxes_all = playbook_box_mode == "All Historical"
+bool playbook_boxes_current = playbook_box_mode == "Current Only"
+bool playbook_boxes_on = playbook_box_mode != "Off"
+bool playbook_box_bar = playbook_boxes_all ? bar_index >= last_bar_index - 150 : playbook_boxes_current ? barstate.islast : false
+
+if show_patterns and show_holy_grail_31 and chart_hg_31_armed and (playbook_boxes_all ? bar_index >= last_bar_index - 150 : barstate.islast)
+    label.new(bar_index, low, text="3-1\nHOLY GRAIL\nARMED", textcolor=color.aqua, style=label.style_none, yloc=yloc.belowbar, size=size.small)
+
+if show_patterns and show_nirvana_13 and chart_nirvana_13 and (playbook_boxes_all ? bar_index >= last_bar_index - 150 : barstate.islast)
+    label.new(bar_index, high, text="1-3\nNIRVANA", textcolor=color.lime, style=label.style_none, yloc=yloc.abovebar, size=size.small)
+
+// Pair boxes preserve the supplied script's blue Holy Grail / green Nirvana highlighting
+// without consuming four additional Pine plot counts via bgcolor().
+if show_patterns and show_hg_nirvana_zones and playbook_boxes_on and chart_hg_31_armed and playbook_box_bar
+    box.new(left=bar_index - 1, top=math.max(high, high[1]), right=bar_index, bottom=math.min(low, low[1]), border_color=color.new(hg_zone_color, 10), border_width=2, bgcolor=color.new(hg_zone_color, 86))
+
+if show_patterns and show_hg_nirvana_zones and playbook_boxes_on and chart_nirvana_13 and playbook_box_bar
+    box.new(left=bar_index - 1, top=math.max(high, high[1]), right=bar_index, bottom=math.min(low, low[1]), border_color=color.new(nirvana_zone_color, 10), border_width=2, bgcolor=color.new(nirvana_zone_color, 86))
+
+// ── Actionable Playbook I setup states ────────────────────────────────────────
+string chart_bt0 = classify_bar(high, low, high[1], low[1])
+string chart_bt1 = classify_bar(high[1], low[1], high[2], low[2])
+bool chart_f2d_now = playbook_failed_2d(high, low, open, close, high[1], low[1])
+bool chart_f2u_now = playbook_failed_2u(high, low, open, close, high[1], low[1])
+bool chart_f2d_prev = playbook_failed_2d(high[1], low[1], open[1], close[1], high[2], low[2])
+bool chart_f2u_prev = playbook_failed_2u(high[1], low[1], open[1], close[1], high[2], low[2])
+
+// RT: a Failed-2 itself is the armed trap. The opposite 2 is the breakout.
+bool chart_rt_bull_armed = chart_f2d_now and chart_bt1 != "1"
+bool chart_rt_bear_armed = chart_f2u_now and chart_bt1 != "1"
+// IR: directional 2 → Inside-1, then wait for the opposite directional 2.
+bool chart_ir_bull_armed = chart_bt0 == "1" and chart_bt1 == "2D"
+bool chart_ir_bear_armed = chart_bt0 == "1" and chart_bt1 == "2U"
+// RevStrat: Inside-1 → directional 2, then wait for the opposite directional 2.
+bool chart_rs_bull_armed = chart_bt1 == "1" and chart_bt0 == "2D"
+bool chart_rs_bear_armed = chart_bt1 == "1" and chart_bt0 == "2U"
+
+// Trigger identities. These use the canonical STRAT combo plus the extra Failed-2 test for RT.
+bool chart_rt_bull_trigger = chart_combo_lbl == "22 Bull Rev" and chart_f2d_prev
+bool chart_rt_bear_trigger = chart_combo_lbl == "22 Bear Rev" and chart_f2u_prev
+bool chart_ir_bull_trigger = chart_combo_lbl == "212 Bull Rev"
+bool chart_ir_bear_trigger = chart_combo_lbl == "212 Bear Rev"
+bool chart_rs_bull_trigger = chart_combo_lbl == "122 Bull Rev"
+bool chart_rs_bear_trigger = chart_combo_lbl == "122 Bear Rev"
+int chart_playbook_id = chart_rt_bull_trigger or chart_rt_bear_trigger ? 1 : chart_ir_bull_trigger or chart_ir_bear_trigger ? 2 : chart_rs_bull_trigger or chart_rs_bear_trigger ? 3 : 0
+
+if show_patterns and show_playbook_zones and playbook_boxes_on and chart_rt_bull_armed and playbook_box_bar
+    box.new(left=bar_index - 1, top=math.max(high, high[1]), right=bar_index, bottom=math.min(low, low[1]), border_color=color.new(rt_zone_color, 5), border_width=2, bgcolor=color.new(rt_zone_color, 88))
+if show_patterns and show_playbook_zones and playbook_boxes_on and chart_rt_bear_armed and playbook_box_bar
+    box.new(left=bar_index - 1, top=math.max(high, high[1]), right=bar_index, bottom=math.min(low, low[1]), border_color=color.new(rt_zone_color, 5), border_width=2, bgcolor=color.new(rt_zone_color, 88))
+if show_patterns and show_playbook_zones and playbook_boxes_on and (chart_ir_bull_armed or chart_ir_bear_armed) and playbook_box_bar
+    box.new(left=bar_index - 1, top=math.max(high, high[1]), right=bar_index, bottom=math.min(low, low[1]), border_color=color.new(ir_zone_color, 5), border_width=2, bgcolor=color.new(ir_zone_color, 89))
+if show_patterns and show_playbook_zones and playbook_boxes_on and (chart_rs_bull_armed or chart_rs_bear_armed) and playbook_box_bar
+    box.new(left=bar_index - 1, top=math.max(high, high[1]), right=bar_index, bottom=math.min(low, low[1]), border_color=color.new(rs_zone_color, 5), border_width=2, bgcolor=color.new(rs_zone_color, 89))
+
+// One ARMED text label per bar. RevStrat uses RVS so it cannot be confused with Relative Strength (RS).
+int chart_armed_id = chart_rt_bull_armed or chart_rt_bear_armed ? 1 : chart_ir_bull_armed or chart_ir_bear_armed ? 2 : chart_rs_bull_armed or chart_rs_bear_armed ? 3 : 0
+bool chart_armed_bull = chart_rt_bull_armed or chart_ir_bull_armed or chart_rs_bull_armed
+bool chart_show_armed_now = show_patterns and show_playbook_armed and chart_armed_id > 0 and (playbook_boxes_all ? bar_index >= last_bar_index - 150 : barstate.islast) and (not reduce_playbook_label_clutter or chart_playbook_id == 0)
+if chart_show_armed_now
+    string armed_txt = chart_armed_id == 1 ? (chart_armed_bull ? "RT · F2D\nARMED" : "RT · F2U\nARMED") : chart_armed_id == 2 ? (chart_armed_bull ? "IR · 2D-1\nARMED" : "IR · 2U-1\nARMED") : (chart_armed_bull ? "RVS · 1-2D\nARMED" : "RVS · 1-2U\nARMED")
+    color armed_col = chart_armed_id == 1 ? rt_zone_color : chart_armed_id == 2 ? ir_zone_color : rs_zone_color
+    label.new(bar_index, chart_armed_bull ? low : high, text=armed_txt, textcolor=armed_col, style=label.style_none, yloc=chart_armed_bull ? yloc.belowbar : yloc.abovebar, size=size.tiny)
+
+string plot_combo_txt = ""
+bool plot_combo_do = false
+
+// Pattern family visibility remains canonical. Quality decides signal authority separately.
+if show_patterns and chart_combo_lbl != ""
+    if str.contains(chart_combo_lbl, "RJ") and show_222_rj
+        plot_combo_txt := "RANDY JACKSON\n2-2-2-2"
+        plot_combo_do := true
+    else if str.contains(chart_combo_lbl, "122 ") and show_122_rev
+        plot_combo_txt := "1-2-2\nRev"
+        plot_combo_do := true
+    else if str.contains(chart_combo_lbl, "132 ") and show_132_rev
+        plot_combo_txt := "1-3-2\nRev"
+        plot_combo_do := true
+    else if str.contains(chart_combo_lbl, "232 ") and show_232_rev
+        plot_combo_txt := "2-3-2\nRev"
+        plot_combo_do := true
+    else if str.contains(chart_combo_lbl, "213 ") and show_213_cont
+        plot_combo_txt := "2-1-3\nCont"
+        plot_combo_do := true
+    else if str.contains(chart_combo_lbl, "322 ") and show_322_rev
+        plot_combo_txt := "3-2-2\nRev"
+        plot_combo_do := true
+    else if str.contains(chart_combo_lbl, "312 ") and show_312_rev
+        plot_combo_txt := "3-1-2\nRev"
+        plot_combo_do := true
+    else if str.contains(chart_combo_lbl, "32 ") and show_32_rev
+        plot_combo_txt := "3-2\nRev"
+        plot_combo_do := true
+    else if str.contains(chart_combo_lbl, "212 ")
+        if str.contains(chart_combo_lbl, "Rev") and show_212_rev
+            plot_combo_txt := "2-1-2\nRev"
+            plot_combo_do := true
+        else if str.contains(chart_combo_lbl, "MM") and show_212_cont
+            plot_combo_txt := "2-1-2\nCont"
+            plot_combo_do := true
+    else if str.contains(chart_combo_lbl, "22 ") or str.contains(chart_combo_lbl, "222 ")
+        if str.contains(chart_combo_lbl, "Rev") and show_22_rev
+            plot_combo_txt := "2-2\nRev"
+            plot_combo_do := true
+        else if not str.contains(chart_combo_lbl, "Rev") and show_22_cont
+            plot_combo_txt := "2-2\nCont"
+            plot_combo_do := true
+
+// The legacy Holy Grail breakout is the bullish 3-1-2 handoff: Outside-3 → Inside-1 → 2U.
+if plot_combo_do and chart_combo_lbl == "312 Bull Rev"
+    plot_combo_txt := "HOLY GRAIL BO\n3-1-2 Rev"
+
+// High-priority playbook trigger names. Canonical STRAT identity remains underneath.
+if plot_combo_do and chart_playbook_id == 1
+    plot_combo_txt := "RECLAIM TRAP BO\n2-2 Rev"
+else if plot_combo_do and chart_playbook_id == 2
+    plot_combo_txt := "INSIDE REV BO\n2-1-2 Rev"
+else if plot_combo_do and chart_playbook_id == 3
+    plot_combo_txt := "REVSTRAT BO\n1-2-2 Rev"
+
+if show_actionable_combo_only and not chart_combo_quality_pass
+    plot_combo_do := false
+
+// A/B keep directional authority. C is weak/amber. X means the trigger fired intrabar but failed to hold.
+if plot_combo_do and bar_index >= last_bar_index - 150
+    color p_col = chart_combo_bull ? bar_2u_color : bar_2d_color
+    string p_yloc = chart_combo_bull ? yloc.belowbar : yloc.abovebar
+    string p_size = size.normal
+    string p_prefix = chart_combo_bull ? "⬆" : "⬇"
+    string p_suffix = ""
+
+    if chart_combo_grade == 2
+        p_col := color.orange
+        p_size := size.small
+        p_prefix := "△"
+        p_suffix := show_combo_grade ? "\nC · WEAK" : ""
+    else if chart_combo_grade == 1
+        p_col := color.gray
+        p_size := size.small
+        p_prefix := "×"
+        p_suffix := show_combo_grade ? "\nX · FAILED" : ""
+    else if show_combo_grade and chart_combo_grade > 0
+        p_suffix := "\n" + chart_combo_grade_txt
+
+    string p_txt = ""
+    if chart_combo_bull
+        p_txt := p_prefix + "\n" + plot_combo_txt + p_suffix
+    else
+        p_txt := plot_combo_txt + p_suffix + "\n" + p_prefix
+
+    label.new(bar_index, chart_combo_bull ? low : high, text=p_txt, textcolor=p_col, style=label.style_none, yloc=p_yloc, size=p_size)
+
+// Immediate risk warning when a qualified bullish breakout fails on the very next bar.
+bool chart_prev_bull_breakout = chart_combo_quality_pass[1] and (chart_playbook_id[1] > 0 or chart_combo_lbl[1] == "312 Bull Rev" or chart_combo_lbl[1] == "2222 Bull RJ")
+bool chart_failed_bull_breakout = chart_prev_bull_breakout and chart_bt0 == "2D" and close < open
+if show_patterns and show_failure_protect and chart_failed_bull_breakout and bar_index >= last_bar_index - 150
+    label.new(bar_index, high, text="EXIT / PROTECT\nFAILED BULL BO", textcolor=color.red, style=label.style_none, yloc=yloc.abovebar, size=size.small)
+
+// ══════════════════════════════════════════════════ TABLE ══════════════════════════════════════════════════
+
+// Layout: one ROW per timeframe, COLUMNS = TF | Bar | F | Dir | R | IF | % | AS | Combo | Rev | Cont
+var int num_cols  = 0
+var int num_rows  = 0
+var table tfc_tbl = na
+
+if barstate.isfirst
+    enabled = 0
+    for i = 0 to 11
+        if array.get(use_arr, i)
+            enabled += 1
+    num_rows := enabled + (show_header_row ? 1 : 0) + 2  // +2 for summary rows
+    num_cols := 1 + (show_bar_col ? 1 : 0) + (show_pct_col ? 1 : 0) + (show_as_col ? 1 : 0) + (show_combo_col ? 1 : 0) + (show_if_col ? 1 : 0) + (show_rev_col ? 1 : 0) + (show_cont_col ? 1 : 0) + 3
+    // +3 for: F (failed), Dir (direction arrow), R (reclaim) — always shown
+    tfc_tbl := table.new(get_table_pos(table_position), num_cols, num_rows)
+
+if barstate.islast and tfc_table
+    ts       = lbl_size
+    isDark   = table_theme == "Dark"
+    cell_bg  = isDark ? color.new(#131722, 0) : color.new(#f5f5f5, 0)
+    cell_bg2 = isDark ? color.new(#161b2a, 0) : color.new(#ffffff, 0)
+    hdr_bg   = isDark ? header_bg_color        : color.new(#e0e3e8, 0)
+    hdr_txt  = isDark ? text_color             : color.new(#1a1a2e, 0)
+    lbl_tc   = isDark ? color.white            : color.new(#1a1a2e, 0)
+    dim_tc   = isDark ? color.gray             : color.new(#666666, 0)
+
+    // ── Header row ──
+    if show_header_row
+        col = 0
+        table.cell(tfc_tbl, col, 0, "TF",    text_color=hdr_txt, bgcolor=hdr_bg, text_size=ts)
+        col += 1
+        if show_bar_col
+            table.cell(tfc_tbl, col, 0, "Bar",  text_color=hdr_txt, bgcolor=hdr_bg, text_size=ts)
+            col += 1
+        // Always: F | Dir | R
+        table.cell(tfc_tbl, col,   0, "F",   text_color=color.orange, bgcolor=hdr_bg, text_size=ts)
+        table.cell(tfc_tbl, col+1, 0, "Dir", text_color=hdr_txt,   bgcolor=hdr_bg, text_size=ts)
+        table.cell(tfc_tbl, col+2, 0, "R",   text_color=hdr_txt,   bgcolor=hdr_bg, text_size=ts)
+        col += 3
+        if show_if_col
+            table.cell(tfc_tbl, col, 0, "IF",    text_color=hdr_txt, bgcolor=hdr_bg, text_size=ts)
+            col += 1
+        if show_pct_col
+            table.cell(tfc_tbl, col, 0, "%",     text_color=hdr_txt, bgcolor=hdr_bg, text_size=ts)
+            col += 1
+        if show_as_col
+            table.cell(tfc_tbl, col, 0, "AS",    text_color=hdr_txt, bgcolor=hdr_bg, text_size=ts)
+            col += 1
+        if show_combo_col
+            table.cell(tfc_tbl, col, 0, "Combo", text_color=hdr_txt, bgcolor=hdr_bg, text_size=ts)
+            col += 1
+        if show_rev_col
+            table.cell(tfc_tbl, col, 0, "Rev",   text_color=hdr_txt, bgcolor=hdr_bg, text_size=ts)
+            col += 1
+        if show_cont_col
+            table.cell(tfc_tbl, col, 0, "Cont",  text_color=hdr_txt, bgcolor=hdr_bg, text_size=ts)
+            col += 1
+
+    // ── Data rows (one per enabled TF) ──
+    row = show_header_row ? 1 : 0
+
+    for i = 0 to 11
+        if array.get(use_arr, i)
+            tf_str  = str.tostring(array.get(tf_arr, i))
+            tf_sec  = array.get(tf_seconds, i)
+            _o      = array.get(o_arr,  i)
+            _h      = array.get(h_arr,  i)
+            _l      = array.get(l_arr,  i)
+            _hp     = array.get(hp_arr, i)
+            _lp     = array.get(lp_arr, i)
+            _hp2    = array.get(hb2_arr, i)
+            _lp2    = array.get(lb2_arr, i)
+            _hp3    = array.get(hb3_arr, i)
+            _lp3    = array.get(lb3_arr, i)
+            _hp4    = array.get(hb4_arr, i)
+            _lp4    = array.get(lb4_arr, i)
+            _c      = array.get(c_arr,   i)
+            _op     = array.get(op_arr,  i)
+            _cp     = array.get(cp_arr,  i)
+            _op2    = array.get(ob2_arr, i)
+            _cp2    = array.get(cb2_arr, i)
+
+            is_valid_tf = tf_sec >= chart_tf_seconds
+            is_ins      = array.get(inside_arr, i)
+            is_f2u      = array.get(f2u_arr, i)
+            is_f2d      = array.get(f2d_arr, i)
+            is_rec      = array.get(rec_arr, i)
+            tfc_bull    = array.get(tfc_arr, i)
+            ifu         = array.get(if_up_arr, i)
+            ifd         = array.get(if_dn_arr, i)
+            is_failed   = is_f2u or is_f2d
+
+            // ── TF label cell BG = bar type color ──
+            tf_bg = color.new(color.gray, 50)
+            bt_str = "?"
+            bt_display = "?" // <--- ADD THIS LINE
+            if is_valid_tf and not (na(_hp) or na(_lp) or na(_h) or na(_l) or na(_o))
+                bt_str := classify_bar(_h, _l, _hp, _lp)
+                bt_display := classify_bar_display(_h, _l, _hp, _lp, _o, _c) // <--- ADD THIS LINE
+                above_o = close > _o
+          
+                if bt_str == "1"
+                    tf_bg := above_o ? bar_1_above_color : bar_1_below_color
+                else if bt_str == "2U"
+                    tf_bg := is_f2u ? bar_f2u_color : bar_2u_color
+                else if bt_str == "2D"
+                    tf_bg := is_f2d ? bar_f2d_color : bar_2d_color
+                else if bt_str == "3"
+                    tf_bg := above_o ? bar_3_above_color : bar_3_below_color
+
+            col = 0
+
+            // ── Col 0: TF label ──
+            table.cell(tfc_tbl, col, row, tf_str, text_color=lbl_tc, bgcolor=cell_bg, text_size=ts)
+            col += 1
+
+            // ── Col 1: Bar Type — 2U=green, 2D=red, 1/3=black ──
+            // ── Col 1: Bar Type — 2U=green, 2D=red, 1/3=black ──
+            if show_bar_col
+                if is_valid_tf and bt_str != "?"
+                    bar_col_bg = bt_str == "2U" ? bar_2u_color : bt_str == "2D" ? bar_2d_color : color.new(color.black, 30)
+                    table.cell(tfc_tbl, col, row, bt_display, text_color=color.white, bgcolor=bar_col_bg, text_size=ts) // <--- CHANGED bt_str to bt_display
+         
+                else
+                    table.cell(tfc_tbl, col, row, tf_sec < chart_tf_seconds ? "–" : "?", text_color=dim_tc, bgcolor=cell_bg, text_size=ts)
+                col += 1
+
+            // ── Col: F (Failed bar) ──
+            if is_valid_tf
+                f_sym = is_failed ? "F" : ""
+                f_col = is_f2u ? bar_f2u_color : is_f2d ? bar_f2d_color : color.orange
+                table.cell(tfc_tbl, col, row, f_sym, text_color=f_col, bgcolor=cell_bg, text_size=ts)
+            else
+                table.cell(tfc_tbl, col, row, "", text_color=dim_tc, bgcolor=cell_bg, text_size=ts)
+            col += 1
+
+            // ── Col: Dir (direction vs open) ──
+            if is_valid_tf and not na(_o)
+                above_open = close > _o
+                dir_sym = above_open ? "↑" : "↓"
+                dir_col = above_open ? ftfc_up_color : ftfc_dn_color
+                table.cell(tfc_tbl, col, row, dir_sym, text_color=dir_col, bgcolor=cell_bg, text_size=ts)
+            else
+                table.cell(tfc_tbl, col, row, "", text_color=dim_tc, bgcolor=cell_bg, text_size=ts)
+            col += 1
+
+            // ── Col: R (Reclaim) ──
+            if is_valid_tf
+                show_r = is_rec and not is_ins
+                if ftfc_override_reclaim and (ftfc_up_classic or ftfc_dn_classic)
+                    show_r := false
+                table.cell(tfc_tbl, col, row, show_r ? "R" : "", text_color=color.white, bgcolor=cell_bg, text_size=ts)
+            else
+                table.cell(tfc_tbl, col, row, "", text_color=dim_tc, bgcolor=cell_bg, text_size=ts)
+            col += 1
+
+            // ── Col: IF (In Force) ──
+            if show_if_col
+                if is_valid_tf
+                    if_sym = ifu ? "▲" : ifd ? "▼" : ""
+                    if_col = ifu ? ftfc_up_color : ifd ? ftfc_dn_color : color.gray
+                    table.cell(tfc_tbl, col, row, if_sym, text_color=if_col, bgcolor=cell_bg, text_size=ts)
+                else
+                    table.cell(tfc_tbl, col, row, "", text_color=dim_tc, bgcolor=cell_bg, text_size=ts)
+                col += 1
+
+
+            // ── Col: % change (TF open → current price) ──
+            if show_pct_col
+                if is_valid_tf and not na(_o) and _o != 0
+                    pct_v  = (close - _o) / _o * 100.0
+                    pct_bg = is_ins ? inside_bar_hl : pct_v > 0 ? bar_2u_color : pct_v < 0 ? bar_2d_color : color.new(color.gray, 40)
+                    pct_tc = is_ins ? color.black : color.white
+                    table.cell(tfc_tbl, col, row, fmt_pct(pct_v), text_color=pct_tc, bgcolor=pct_bg, text_size=ts)
+                else
+                    table.cell(tfc_tbl, col, row, tf_sec < chart_tf_seconds ? "" : "–", text_color=dim_tc, bgcolor=cell_bg, text_size=ts)
+                col += 1
+
+            // ── Col: AS (bar sequence: oldest-mid-newest) ──
+            if show_as_col
+                if is_valid_tf and not (na(_h) or na(_hp) or na(_hp2) or na(_hp3))
+                    as_str = get_as_string(_h, _l, _hp, _lp, _hp2, _lp2, _hp3, _lp3, _o, _c, _op, _cp, _op2, _cp2)
+                    
+                    table.cell(tfc_tbl, col, row, as_str, text_color=lbl_tc, bgcolor=cell_bg, text_size=ts)
+                else
+                    table.cell(tfc_tbl, col, row, "", text_color=dim_tc, bgcolor=cell_bg, text_size=ts)
+                col += 1
+
+            // ── Col: Combo (StratAssist pattern) ──
+            if show_combo_col
+                if is_valid_tf and not (na(_h) or na(_hp) or na(_hp2) or na(_hp3) or na(_hp4))
+                    [combo_lbl, combo_bull] = get_combo(_h, _l, _hp, _lp, _hp2, _lp2, _hp3, _lp3, _hp4, _lp4)
+                    combo_tc = combo_lbl == "" ? color.gray : combo_bull ? ftfc_up_color : ftfc_dn_color
+                    table.cell(tfc_tbl, col, row, combo_lbl, text_color=combo_tc, bgcolor=cell_bg, text_size=ts)
+                else
+                    table.cell(tfc_tbl, col, row, "", text_color=dim_tc, bgcolor=cell_bg, text_size=ts)
+                col += 1
+
+            // ── Col: Rev (failed 2 reversal signal ✓) ──
+            if show_rev_col
+                if is_valid_tf
+                    rev_sym = is_failed ? "✓" : ""
+                    rev_col = is_f2u ? bar_f2u_color : is_f2d ? bar_f2d_color : color.gray
+                    table.cell(tfc_tbl, col, row, rev_sym, text_color=rev_col, bgcolor=cell_bg, text_size=ts)
+                else
+                    table.cell(tfc_tbl, col, row, "", text_color=dim_tc, bgcolor=cell_bg, text_size=ts)
+                col += 1
+
+            // ── Col: Cont (FTFC continuity agreement) ──
+            if show_cont_col
+                if is_valid_tf
+                    cont_sym = ""
+                    cont_col = color.gray
+                    cont_bg  = cell_bg
+                    if tfc_bull and ftfc_up
+                        cont_sym := "+"
+                        cont_col := color.white
+                        cont_bg  := color.new(ftfc_up_color, 60)
+                    else if not tfc_bull and ftfc_dn
+                        cont_sym := "+"
+                        cont_col := color.white
+                        cont_bg  := color.new(ftfc_dn_color, 60)
+                    table.cell(tfc_tbl, col, row, cont_sym, text_color=cont_col, bgcolor=cont_bg, text_size=ts)
+                else
+                    table.cell(tfc_tbl, col, row, "", text_color=dim_tc, bgcolor=cell_bg, text_size=ts)
+                col += 1
+
+            row += 1
+
+    // ══════════════ STRAT SUMMARY ROWS ══════════════
+    // Row S1: FTFC + In Force counts + dominant bias
+    // Row S2: Key combo signal from highest active TF
+
+    // -- Gather in-force counts and dominant combo from the TRUE highest enabled TF --
+    // IMPORTANT: array index order is user-slot order, not timeframe rank. The old
+    // reverse-index loop could select a 60m bearish combo before a Daily/Weekly/Monthly
+    // bullish combo. Rank candidates by timeframe.in_seconds() instead.
+    if_up_total = 0
+    if_dn_total = 0
+    htf_combo_lbl     = ""
+    htf_combo_tf      = ""
+    htf_combo_bull    = false
+    htf_combo_found   = false
+    htf_combo_seconds = -1
+
+    for i = 0 to 11
+        tf_i_sec = array.get(tf_seconds, i)
+        if array.get(use_arr, i) and tf_i_sec >= chart_tf_seconds
+            if array.get(if_up_arr, i)
+                if_up_total += 1
+            else if array.get(if_dn_arr, i)
+                if_dn_total += 1
+
+            _h_i  = array.get(h_arr,   i)
+            _hp_i = array.get(hp_arr,  i)
+            _hp2i = array.get(hb2_arr, i)
+            _hp3i = array.get(hb3_arr, i)
+            _hp4i = array.get(hb4_arr, i)
+            _l_i  = array.get(l_arr,   i)
+            _lp_i = array.get(lp_arr,  i)
+            _lp2i = array.get(lb2_arr, i)
+            _lp3i = array.get(lb3_arr, i)
+            _lp4i = array.get(lb4_arr, i)
+
+            if not (na(_h_i) or na(_l_i) or na(_hp_i) or na(_lp_i) or na(_hp2i) or na(_lp2i) or na(_hp3i) or na(_lp3i) or na(_hp4i) or na(_lp4i))
+                [lbl_i, bull_i] = get_combo(_h_i, _l_i, _hp_i, _lp_i, _hp2i, _lp2i, _hp3i, _lp3i, _hp4i, _lp4i)
+                // Keep the combo belonging to the largest timeframe in seconds.
+                if lbl_i != "" and tf_i_sec > htf_combo_seconds
+                    htf_combo_lbl     := lbl_i
+                    htf_combo_tf      := str.tostring(array.get(tf_arr, i))
+                    htf_combo_bull    := bull_i
+                    htf_combo_found   := true
+                    htf_combo_seconds := tf_i_sec
+
+    // -- Build summary line 1: FTFC + In Force --
+    ftfc_txt  = ftfc_up ? "FTFC ▲ BULL" : ftfc_dn ? "FTFC ▼ BEAR" : "FTFC ⚡ CONFLICT"
+    ftfc_col  = ftfc_up ? ftfc_up_color : ftfc_dn ? ftfc_dn_color : color.orange
+    if_txt    = if_up_total > 0 and if_dn_total == 0 ? " | " + str.tostring(if_up_total) + " IF ▲" : if_dn_total > 0 and if_up_total == 0 ? " | " + str.tostring(if_dn_total) + " IF ▼" : if_up_total > 0 and if_dn_total > 0  ? " | " + str.tostring(if_up_total) + "▲ " + str.tostring(if_dn_total) + "▼ IF" : ""
+    inside_txt = inside_bar_count > 0 ? " | " + str.tostring(inside_bar_count) + " Inside" : ""
+    sum1_txt  = ftfc_txt + if_txt + inside_txt
+    sum1_bg   = ftfc_up ? color.new(ftfc_up_color, 75) : ftfc_dn ? color.new(ftfc_dn_color, 75) : color.new(color.orange, 80)
+
+    table.cell(tfc_tbl, 0, row, sum1_txt, text_color=ftfc_col, bgcolor=sum1_bg, text_size=ts, tooltip="FTFC direction + In Force count + Inside bar count")
+    table.merge_cells(tfc_tbl, 0, row, num_cols - 1, row)
+    row += 1
+
+    // -- Build summary line 2: Bias from combo + failed bars --
+    bias_txt = ""
+    bias_col = color.gray
+    bias_bg  = color.new(color.black, 70)
+
+    if htf_combo_found
+        combo_dir = htf_combo_bull ? "🟢 Bull" : "🔴 Bear"
+        // Add context based on combo type
+        is_cont = str.contains(htf_combo_lbl, "Cont") or str.contains(htf_combo_lbl, "MM")
+        is_rev  = str.contains(htf_combo_lbl, "Rev") or str.contains(htf_combo_lbl, "RJ")
+        ctx_txt = is_cont ? " — Continuation" : is_rev ? " — Reversal Setup" : ""
+        // Failed bar bonus context
+        failed_ctx = fail_bull_count > 0 and htf_combo_bull ? " + F2D confirms" :
+                     fail_bear_count > 0 and not htf_combo_bull ? " + F2U confirms" : ""
+        bias_txt := combo_dir + " | " + htf_combo_tf + " " + htf_combo_lbl + ctx_txt + failed_ctx
+        bias_col := htf_combo_bull ? ftfc_up_color : ftfc_dn_color
+        bias_bg  := htf_combo_bull ? color.new(ftfc_up_color, 82) : color.new(ftfc_dn_color, 82)
+    else if ftfc_up
+        bias_txt := "🟢 Bull bias — no combo signal yet"
+        bias_col := ftfc_up_color
+        bias_bg  := color.new(ftfc_up_color, 82)
+    else if ftfc_dn
+        bias_txt := "🔴 Bear bias — no combo signal yet"
+        bias_col := ftfc_dn_color
+        bias_bg  := color.new(ftfc_dn_color, 82)
+    else
+        bias_txt := "⚡ Mixed — wait for TF alignment"
+        bias_col := color.orange
+        bias_bg  := color.new(color.orange, 82)
+
+    table.cell(tfc_tbl, 0, row, bias_txt, text_color=bias_col, bgcolor=bias_bg, text_size=ts, tooltip="Strat bias: combo from the highest enabled valid timeframe + failed-bar context")
+    table.merge_cells(tfc_tbl, 0, row, num_cols - 1, row)
+
+// ══════════════════════════════════════════════════ HTF ACTIONABLE LEVELS ══════════════════════════════════
+
+// ==========================================
+// HTF ACTIONABLE LEVELS (SCREENER COMPATIBLE)
+// ==========================================
+var g8 = "HTF Trigger Levels (Prev Bar)"
+// Yearly and Quarterly are disabled to comply with TradingView Screener limits ('1M' max)
+show_m_hl = input.bool(true, "Monthly H/L", group=g8, inline="m")
+col_m     = input.color(#2196f3, "", group=g8, inline="m")
+show_w_hl = input.bool(true, "Weekly H/L", group=g8, inline="w")
+col_w     = input.color(#00bcd4, "", group=g8, inline="w")
+show_d_hl = input.bool(false, "Daily H/L", group=g8, inline="d")
+col_d     = input.color(#ffffff, "", group=g8, inline="d")
+
+// Fetch Previous HTF Data (Max timeframe restricted to 1M for Screener compatibility)
+[ph_m, pl_m] = request.security(syminfo.tickerid, "1M", [high[1], low[1]], barmerge.gaps_off, barmerge.lookahead_on, calc_bars_count = 3)
+[ph_w, pl_w] = request.security(syminfo.tickerid, "W",  [high[1], low[1]], barmerge.gaps_off, barmerge.lookahead_on, calc_bars_count = 3)
+[ph_d, pl_d] = request.security(syminfo.tickerid, "D",  [high[1], low[1]], barmerge.gaps_off, barmerge.lookahead_on, calc_bars_count = 3)
+
+// Detect when a new period begins to anchor the start of the line
+var int start_m = na
+var int start_w = na
+var int start_d = na
+
+if ta.change(time("1M")) != 0
+    start_m := bar_index
+if ta.change(time("W")) != 0
+    start_w := bar_index
+if ta.change(time("D")) != 0
+    start_d := bar_index
+
+// Draw the anchored lines and labels strictly on the final bar.
+// Delete the prior objects first so realtime updates cannot accumulate objects/memory.
+var line m_hi_line = na
+var line m_lo_line = na
+var line w_hi_line = na
+var line w_lo_line = na
+var line d_hi_line = na
+var line d_lo_line = na
+var label m_hi_lbl = na
+var label m_lo_lbl = na
+var label w_hi_lbl = na
+var label w_lo_lbl = na
+var label d_hi_lbl = na
+var label d_lo_lbl = na
+
+if barstate.islast
+    line.delete(m_hi_line)
+    line.delete(m_lo_line)
+    line.delete(w_hi_line)
+    line.delete(w_lo_line)
+    line.delete(d_hi_line)
+    line.delete(d_lo_line)
+    label.delete(m_hi_lbl)
+    label.delete(m_lo_lbl)
+    label.delete(w_hi_lbl)
+    label.delete(w_lo_lbl)
+    label.delete(d_hi_lbl)
+    label.delete(d_lo_lbl)
+
+    if show_m_hl and not na(start_m)
+        m_hi_line := line.new(start_m, ph_m, bar_index + 2, ph_m, color=col_m, width=1)
+        m_lo_line := line.new(start_m, pl_m, bar_index + 2, pl_m, color=col_m, width=1)
+        m_hi_lbl := label.new(bar_index + 2, ph_m, "M H: " + str.tostring(ph_m, format.mintick), color=color.new(color.white, 100), textcolor=col_m, style=label.style_label_lower_left, size=size.small)
+        m_lo_lbl := label.new(bar_index + 2, pl_m, "M L: " + str.tostring(pl_m, format.mintick), color=color.new(color.white, 100), textcolor=col_m, style=label.style_label_lower_left, size=size.small)
+    if show_w_hl and not na(start_w)
+        w_hi_line := line.new(start_w, ph_w, bar_index + 2, ph_w, color=col_w, width=1)
+        w_lo_line := line.new(start_w, pl_w, bar_index + 2, pl_w, color=col_w, width=1)
+        w_hi_lbl := label.new(bar_index + 2, ph_w, "W H: " + str.tostring(ph_w, format.mintick), color=color.new(color.white, 100), textcolor=col_w, style=label.style_label_lower_left, size=size.small)
+        w_lo_lbl := label.new(bar_index + 2, pl_w, "W L: " + str.tostring(pl_w, format.mintick), color=color.new(color.white, 100), textcolor=col_w, style=label.style_label_lower_left, size=size.small)
+    if show_d_hl and not na(start_d)
+        d_hi_line := line.new(start_d, ph_d, bar_index + 2, ph_d, color=col_d, width=1)
+        d_lo_line := line.new(start_d, pl_d, bar_index + 2, pl_d, color=col_d, width=1)
+        d_hi_lbl := label.new(bar_index + 2, ph_d, "D H: " + str.tostring(ph_d, format.mintick), color=color.new(color.white, 100), textcolor=col_d, style=label.style_label_lower_left, size=size.small)
+        d_lo_lbl := label.new(bar_index + 2, pl_d, "D L: " + str.tostring(pl_d, format.mintick), color=color.new(color.white, 100), textcolor=col_d, style=label.style_label_lower_left, size=size.small)
+
+// ==========================================
+// THE STRAT: SCREENING & ALERT ENGINE
+// ==========================================
+var g_screen = "🎯 Screener & Alert Settings"
+// Pine Screener evaluates the script on the timeframe selected in its toolbar.
+// Do not lock a separate timeframe here; direct chart OHLC follows 1D, 1W, etc. automatically.
+alert_on_close = input.bool(true, "Trigger Alerts Only on Bar Close", group=g_screen, tooltip="Prevents false signals during live candle formation.")
+
+// Candle-shape sensitivity for Hammer / Shooter scans.
+wick_body_ratio = input.float(2.0, "Hammer/Shooter: Minimum Wick ÷ Body", minval=1.0, step=0.25, group=g_screen)
+max_opposite_wick = input.float(0.50, "Hammer/Shooter: Maximum Opposite Wick ÷ Body", minval=0.0, step=0.10, group=g_screen)
+close_zone_pct = input.float(35.0, "Hammer/Shooter: Close Within End % of Range", minval=10.0, maxval=50.0, step=5.0, group=g_screen)
+require_shape_direction = input.bool(false, "Hammer Must Close Green / Shooter Red", group=g_screen, tooltip="Off is more faithful to candle shape. Turn on for fewer, stricter signals.")
+
+// --- 1. SCREENING-TIMEFRAME DATA ---
+// Direct OHLC is intentional: Pine Screener's selected timeframe becomes the script timeframe.
+// Changing the Screener toolbar from 1D to 1W therefore recalculates every signal on weekly candles.
+s_o  = open
+s_h  = high
+s_l  = low
+s_c  = close
+s_o1 = open[1]
+s_h1 = high[1]
+s_l1 = low[1]
+s_c1 = close[1]
+s_o2 = open[2]
+s_h2 = high[2]
+s_l2 = low[2]
+s_c2 = close[2]
+s_o3 = open[3]
+s_h3 = high[3]
+s_l3 = low[3]
+s_c3 = close[3]
+s_o4 = open[4]
+s_h4 = high[4]
+s_l4 = low[4]
+s_c4 = close[4]
+
+// --- 2. EVALUATE BAR TYPES & COMBOS ---
+// Classify current bar type [cite: 175] and 4-bar sequence combo [cite: 191]
+current_bar_type = classify_bar_display(s_h, s_l, s_h1, s_l1, s_o, s_c) 
+[combo_name, is_bullish_combo] = get_combo(s_h, s_l, s_h1, s_l1, s_h2, s_l2, s_h3, s_l3, s_h4, s_l4)
+
+// Ensure signals only fire when valid (either realtime live or confirmed on close)
+valid_trigger = alert_on_close ? barstate.isconfirmed : true
+
+// --- 3. ACTIONABLE BAR / CANDLE SCREENING CONDITIONS ---
+// STRAT direction is based on candle close versus candle open.
+base_bar_type = classify_bar(s_h, s_l, s_h1, s_l1)
+bar_up = s_c > s_o
+bar_dn = s_c < s_o
+
+// Inside and outside bars split by candle direction for direct Screener filters.
+is_bar_1u = valid_trigger and base_bar_type == "1" and bar_up
+is_bar_1d = valid_trigger and base_bar_type == "1" and bar_dn
+is_bar_1  = is_bar_1u or is_bar_1d
+
+is_bar_3u = valid_trigger and base_bar_type == "3" and bar_up
+is_bar_3d = valid_trigger and base_bar_type == "3" and bar_dn
+is_bar_3  = is_bar_3u or is_bar_3d
+
+// Failed directional bars used by Actionable Signals.
+is_bar_2uR = valid_trigger and base_bar_type == "2U" and bar_dn
+is_bar_2dG = valid_trigger and base_bar_type == "2D" and bar_up
+
+// Hammer / Shooter anatomy. A tiny minimum body prevents division instability on doji bars.
+candle_range = math.max(s_h - s_l, syminfo.mintick)
+real_body = math.max(math.abs(s_c - s_o), syminfo.mintick)
+upper_wick = s_h - math.max(s_o, s_c)
+lower_wick = math.min(s_o, s_c) - s_l
+close_from_low_pct = (s_c - s_l) / candle_range * 100.0
+close_from_high_pct = (s_h - s_c) / candle_range * 100.0
+
+hammer_shape = lower_wick >= real_body * wick_body_ratio and upper_wick <= real_body * max_opposite_wick and close_from_low_pct >= 100.0 - close_zone_pct
+shooter_shape = upper_wick >= real_body * wick_body_ratio and lower_wick <= real_body * max_opposite_wick and close_from_high_pct >= 100.0 - close_zone_pct
+is_hammer = valid_trigger and hammer_shape and (not require_shape_direction or bar_up)
+is_shooter = valid_trigger and shooter_shape and (not require_shape_direction or bar_dn)
+
+// Master directional groups matching an Actionable Signals menu.
+any_bullish_bar_signal = is_bar_2dG or is_bar_1u or is_bar_3u or is_hammer
+any_bearish_bar_signal = is_bar_2uR or is_bar_1d or is_bar_3d or is_shooter
+
+// Hidden outputs become selectable columns/filters in TradingView Screener.
+plot(is_bar_2dG ? 1 : 0, title="Actionable: 2dG", display=display.data_window)
+plot(is_bar_2uR ? 1 : 0, title="Actionable: 2uR", display=display.data_window)
+plot(is_hammer ? 1 : 0, title="Actionable: Hammer", display=display.data_window)
+plot(is_shooter ? 1 : 0, title="Actionable: Shooter", display=display.data_window)
+plot(is_bar_1u ? 1 : 0, title="Actionable: Inside 1U", display=display.data_window)
+plot(is_bar_1d ? 1 : 0, title="Actionable: Inside 1D", display=display.data_window)
+plot(is_bar_3u ? 1 : 0, title="Actionable: Outside 3U", display=display.data_window)
+plot(is_bar_3d ? 1 : 0, title="Actionable: Outside 3D", display=display.data_window)
+plot(is_bar_1 ? 1 : 0, title="Actionable: Any Inside Bar", display=display.data_window)
+plot(is_bar_3 ? 1 : 0, title="Actionable: Any Outside Bar", display=display.data_window)
+plot(any_bullish_bar_signal ? 1 : 0, title="Actionable: Any Bullish Bar Signal", display=display.data_window)
+plot(any_bearish_bar_signal ? 1 : 0, title="Actionable: Any Bearish Bar Signal", display=display.data_window)
+
+// Numeric ID is useful as a compact Screener column:
+// +1 2dG, +2 Hammer, +3 1U, +4 3U; negatives are bearish equivalents.
+actionable_signal_id = is_bar_2dG ? 1 : is_hammer ? 2 : is_bar_1u ? 3 : is_bar_3u ? 4 : is_bar_2uR ? -1 : is_shooter ? -2 : is_bar_1d ? -3 : is_bar_3d ? -4 : 0
+plot(actionable_signal_id, title="Actionable: Signal ID", display=display.data_window)
+
+// --- 4. ACTIONABLE COMBO PATTERN CONDITIONS ---
+// Isolate the highest-probability actionable reversal and continuation signals
+is_212_bull_rev = valid_trigger and combo_name == "212 Bull Rev" 
+is_212_bear_rev = valid_trigger and combo_name == "212 Bear Rev"
+is_212_bull_mm  = valid_trigger and combo_name == "212 Bull MM"  
+is_212_bear_mm  = valid_trigger and combo_name == "212 Bear MM" 
+
+is_22_bull_rev  = valid_trigger and combo_name == "22 Bull Rev"  
+is_22_bear_rev  = valid_trigger and combo_name == "22 Bear Rev"  
+is_22_bull_cont = valid_trigger and combo_name == "22 Bull Cont"
+is_22_bear_cont = valid_trigger and combo_name == "22 Bear Cont"
+
+is_312_bull_rev = valid_trigger and combo_name == "312 Bull Rev" 
+is_312_bear_rev = valid_trigger and combo_name == "312 Bear Rev" 
+
+is_322_bull_rev = valid_trigger and combo_name == "322 Bull Rev" 
+is_322_bear_rev = valid_trigger and combo_name == "322 Bear Rev" 
+
+is_122_bull_rev = valid_trigger and combo_name == "122 Bull Rev" 
+is_122_bear_rev = valid_trigger and combo_name == "122 Bear Rev" 
+
+is_2222_bull_rj = valid_trigger and combo_name == "2222 Bull RJ"
+is_2222_bear_rj = valid_trigger and combo_name == "2222 Bear RJ" 
+
+is_222_bull     = valid_trigger and combo_name == "222 Bull"     
+is_222_bear     = valid_trigger and combo_name == "222 Bear"    
+
+is_232_bull_rev = valid_trigger and combo_name == "232 Bull Rev"
+is_232_bear_rev = valid_trigger and combo_name == "232 Bear Rev"
+
+is_213_bull_cont = valid_trigger and combo_name == "213 Bull Cont"
+is_213_bear_cont = valid_trigger and combo_name == "213 Bear Cont"
+
+is_132_bull_rev = valid_trigger and combo_name == "132 Bull Rev"
+is_132_bear_rev = valid_trigger and combo_name == "132 Bear Rev"
+
+// Master Grouping Conditions for easy scanning
+any_bullish_combo = is_212_bull_rev or is_22_bull_rev or is_22_bull_cont or is_312_bull_rev or is_322_bull_rev or is_122_bull_rev or is_2222_bull_rj or is_212_bull_mm or is_222_bull or is_232_bull_rev or is_213_bull_cont or is_132_bull_rev
+any_bearish_combo = is_212_bear_rev or is_22_bear_rev or is_22_bear_cont or is_312_bear_rev or is_322_bear_rev or is_122_bear_rev or is_2222_bear_rj or is_212_bear_mm or is_222_bear or is_232_bear_rev or is_213_bear_cont or is_132_bear_rev
+
+// Apply the same A/B/C/X confirmation layer to Screener combo authority.
+[screen_combo_grade, screen_combo_held, screen_combo_dir_ok, screen_combo_close_loc] = combo_quality(s_o, s_h, s_l, s_c, s_h1, s_l1, is_bullish_combo, combo_strong_close_pct)
+bool screen_combo_quality_pass = combo_name != "" and combo_quality_pass(screen_combo_grade, combo_quality_mode)
+bool actionable_bullish_combo = any_bullish_combo and screen_combo_quality_pass
+bool actionable_bearish_combo = any_bearish_combo and screen_combo_quality_pass
+string screen_combo_grade_txt = combo_quality_letter(screen_combo_grade)
+
+// Actionable Playbook I identities for Pine Screener.
+bool screen_prev_f2d = playbook_failed_2d(s_h1, s_l1, s_o1, s_c1, s_h2, s_l2)
+bool screen_prev_f2u = playbook_failed_2u(s_h1, s_l1, s_o1, s_c1, s_h2, s_l2)
+bool screen_rt_bull = valid_trigger and combo_name == "22 Bull Rev" and screen_prev_f2d and screen_combo_quality_pass
+bool screen_rt_bear = valid_trigger and combo_name == "22 Bear Rev" and screen_prev_f2u and screen_combo_quality_pass
+bool screen_ir_bull = valid_trigger and combo_name == "212 Bull Rev" and screen_combo_quality_pass
+bool screen_ir_bear = valid_trigger and combo_name == "212 Bear Rev" and screen_combo_quality_pass
+bool screen_rs_bull = valid_trigger and combo_name == "122 Bull Rev" and screen_combo_quality_pass
+bool screen_rs_bear = valid_trigger and combo_name == "122 Bear Rev" and screen_combo_quality_pass
+int screen_playbook_id = screen_rt_bull ? 1 : screen_ir_bull ? 2 : screen_rs_bull ? 3 : screen_rt_bear ? -1 : screen_ir_bear ? -2 : screen_rs_bear ? -3 : 0
+
+plot(screen_rt_bull ? 1 : 0, title="Playbook: Reclaim Trap Bull", display=display.data_window)
+plot(screen_rt_bear ? 1 : 0, title="Playbook: Reclaim Trap Bear", display=display.data_window)
+plot(screen_ir_bull ? 1 : 0, title="Playbook: Inside Reversal Bull", display=display.data_window)
+plot(screen_ir_bear ? 1 : 0, title="Playbook: Inside Reversal Bear", display=display.data_window)
+plot(screen_rs_bull ? 1 : 0, title="Playbook: RevStrat Bull", display=display.data_window)
+plot(screen_rs_bear ? 1 : 0, title="Playbook: RevStrat Bear", display=display.data_window)
+plot(screen_playbook_id, title="Playbook: ID (+Bull/-Bear)", display=display.data_window)
+plot(screen_playbook_id > 0 ? 1 : 0, title="Trade Action: BUY Playbook", display=display.data_window)
+plot(screen_playbook_id < 0 ? 1 : 0, title="Trade Action: SELL/PROTECT Playbook", display=display.data_window)
+plot(is_2222_bull_rj and screen_combo_quality_pass ? 1 : 0, title="Trade Action: Randy Jackson Bull", display=display.data_window)
+
+// v2.5.7 Trend Participation Scan. Grade A/B is explicit here and intentionally
+// independent of Canonical/Strict display mode: this scan is for established-trend participation.
+bool screen_grade_ab = screen_combo_grade >= 3
+bool screen_tp_22 = is_22_bull_cont and screen_grade_ab
+bool screen_tp_212 = is_212_bull_mm and screen_grade_ab
+bool screen_tp_222 = is_222_bull and screen_grade_ab
+bool screen_tp_rt = screen_rt_bull and screen_grade_ab
+bool screen_trend_entry_ab = screen_tp_22 or screen_tp_212 or screen_tp_222 or screen_tp_rt
+int screen_trend_entry_id = screen_tp_22 ? 1 : screen_tp_212 ? 2 : screen_tp_222 ? 3 : screen_tp_rt ? 4 : 0
+plot(screen_trend_entry_ab ? 1 : 0, title="Trend Participation: ENTRY A/B", display=display.data_window)
+plot(screen_trend_entry_id, title="Trend Participation: Type ID", display=display.data_window)
+plot(screen_trend_entry_ab ? screen_combo_grade : 0, title="Trend Participation: Grade (4=A 3=B)", display=display.data_window)
+plot(screen_tp_22 ? 1 : 0, title="Trend Participation: 2-2 Cont A/B", display=display.data_window)
+
+// Hidden outputs for Pine Screener — new combos. These now respect the selected quality mode.
+plot(is_232_bull_rev and screen_combo_quality_pass ? 1 : 0, title="Combo: 232 Bull Rev", display=display.data_window)
+plot(is_232_bear_rev and screen_combo_quality_pass ? 1 : 0, title="Combo: 232 Bear Rev", display=display.data_window)
+plot(is_213_bull_cont and screen_combo_quality_pass ? 1 : 0, title="Combo: 213 Bull Cont", display=display.data_window)
+plot(is_213_bear_cont and screen_combo_quality_pass ? 1 : 0, title="Combo: 213 Bear Cont", display=display.data_window)
+plot(is_132_bull_rev and screen_combo_quality_pass ? 1 : 0, title="Combo: 132 Bull Rev", display=display.data_window)
+plot(is_132_bear_rev and screen_combo_quality_pass ? 1 : 0, title="Combo: 132 Bear Rev", display=display.data_window)
+
+
+// ══════════════════════════════════════════════════ TFC × AVWAP SCREENER-PARITY DASHBOARD v2.4.0 ══════════════════════════════════════════════════
+// PURPOSE
+// Replace the legacy STRAT × AVWAP A/A+/PREP grading engine with the SAME authority
+// used by NOW TFC × AVWAP Ranking Screener v2.3.1.
+//
+// Authority hierarchy:
+//   D/W/M Classic + AVWAP = Core sponsorship
+//   Q/Y                  = structural macro context
+//   Weekly In-Force      = commitment
+//   H                    = execution context only
+//   STRAT                = timing layer only
+//   RS / RVOL / extension= ranking support only
+//
+// IMPORTANT: This dashboard intentionally calculates the canonical context from 60m
+// data even when the chart itself is Daily/Weekly. That makes the lower-right table a
+// parity companion to the 1H Pine Screener rather than a second competing engine.
+
+var g_av = "🧭 TFC × AVWAP · 60m Screener Parity"
+show_avwap_dashboard = input.bool(false, "Show Legacy Screener-Parity Table (Validation)", tooltip="Optional parity view retained for validation. The Unified Dashboard uses the same canonical values.", group=g_av)
+parity_dash_position = input.string("Middle Right", "Dashboard Position", options=["Bottom Center","Bottom Left","Bottom Right","Middle Center","Middle Left","Middle Right","Top Center","Top Left","Top Right"], group=g_av)
+parity_dash_size = input.string("Small", "Dashboard Text Size", options=["Tiny","Small","Normal","Large"], group=g_av)
+
+// Match the dedicated screener defaults. Change these only when the screener settings change.
+px_early_av_core_min = input.int(2, "Stage 1: Min AVWAP Core Bull", minval=1, maxval=3, group=g_av)
+px_early_macro_min = input.int(1, "Stage 1: Min Q/Y Macro Bull", minval=0, maxval=2, group=g_av)
+px_develop_classic_min = input.int(2, "Stage 2: Min Classic Core Bull", minval=1, maxval=3, group=g_av)
+px_ready_weekly_pct = input.float(4.0, "Stage 3: Within % of Prior-Week High", minval=0.25, maxval=15.0, step=0.25, group=g_av)
+px_quality_min = input.float(65.0, "Preset 1 Quality Minimum", minval=40, maxval=100, step=1, group=g_av)
+px_aplus_min = input.float(75.0, "Preset 2 A+ Minimum", minval=40, maxval=100, step=1, group=g_av)
+px_early_score_min = input.float(58.0, "Preset 3 Early Minimum", minval=40, maxval=100, step=1, group=g_av)
+px_extension_caution = input.float(1.75, "Extension Caution Above EMA20 (ATR)", minval=0.25, maxval=5.0, step=0.25, group=g_av)
+px_severe_extension = input.float(2.50, "Preset Maximum Extension (ATR)", minval=0.50, maxval=6.0, step=0.25, group=g_av)
+px_rs_benchmark = input.symbol("AMEX:SPY", "RS Benchmark", group=g_av)
+px_rs_lookback = input.int(20, "RS Lookback (Daily Bars)", minval=5, maxval=100, group=g_av)
+px_rvol_lookback = input.int(20, "RVOL Average (Daily Bars)", minval=5, maxval=100, group=g_av)
+px_strat_tier_min_p4 = input.int(2, "Preset 4 Minimum STRAT Tier", minval=1, maxval=3, group=g_av)
+px_strat_recent_bars = input.int(3, "Recent STRAT Window (60m Bars)", minval=1, maxval=12, group=g_av)
+
+px_clamp(float v, float lo, float hi) =>
+    math.max(lo, math.min(hi, v))
+
+px_signed(float v, string fmt) =>
+    na(v) ? "N/A" : (v >= 0 ? "+" : "") + str.tostring(v, fmt)
+
+// Numeric combo identity used by the dedicated screener.
+// Signal IDs: 1=212 Rev, 2=Failed 2D, 3=312 Rev, 4=322 Rev, 5=122 Rev,
+// 6=232 Rev, 7=132 Rev, 8=22 Rev, 9=Randy Jackson,
+// 10=212 continuation, 11=213 continuation, 12=222 continuation,
+// 13=Hammer, 14=Inside 1U, 15=Outside 3U, 16=2-2 continuation.
+px_combo(float h0, float l0, float h1x, float l1x, float h2x, float l2x, float h3x, float l3x, float h4x, float l4x) =>
+    string b1x = classify_bar(h0, l0, h1x, l1x)
+    string b2x = classify_bar(h1x, l1x, h2x, l2x)
+    string b3x = classify_bar(h2x, l2x, h3x, l3x)
+    string b4x = classify_bar(h3x, l3x, h4x, l4x)
+    int id = 0
+    int tier = 0
+    if b3x == "2D" and b2x == "1" and b1x == "2U"
+        id := 1
+        tier := 3
+    else if b3x == "3" and b2x == "1" and b1x == "2U"
+        id := 3
+        tier := 3
+    else if b3x == "3" and b2x == "2D" and b1x == "2U"
+        id := 4
+        tier := 3
+    else if b3x == "1" and b2x == "2D" and b1x == "2U"
+        id := 5
+        tier := 3
+    else if b3x == "2D" and b2x == "3" and b1x == "2U"
+        id := 6
+        tier := 2
+    else if b3x == "1" and b2x == "3" and b1x == "2U"
+        id := 7
+        tier := 2
+    else if b4x == "2U" and b3x == "2U" and b2x == "2D" and b1x == "2U"
+        id := 9
+        tier := 2
+    else if b2x == "2D" and b1x == "2U"
+        id := 8
+        tier := 2
+    else if b3x == "2U" and b2x == "1" and b1x == "2U"
+        id := 10
+        tier := 1
+    else if b3x == "2U" and b2x == "1" and b1x == "3"
+        id := 11
+        tier := 1
+    else if b3x == "2U" and b2x == "2U" and b1x == "2U"
+        id := 12
+        tier := 1
+    else if b2x == "2U" and b1x == "2U"
+        id := 16
+        tier := 1
+    [id, tier]
+
+px_signal_name(int id) =>
+    switch id
+        1  => "2-1-2 Bull Rev"
+        2  => "Failed 2D"
+        3  => "3-1-2 Bull Rev"
+        4  => "3-2-2 Bull Rev"
+        5  => "1-2-2 Bull Rev"
+        6  => "2-3-2 Bull Rev"
+        7  => "1-3-2 Bull Rev"
+        8  => "2-2 Bull Rev"
+        9  => "Randy Jackson"
+        10 => "2-1-2 Cont"
+        11 => "2-1-3 Cont"
+        12 => "2-2-2 Cont"
+        13 => "Hammer"
+        14 => "Inside 1U"
+        15 => "Outside 3U"
+        16 => "2-2 Cont"
+        => "None"
+
+px_relationship_name(int code) =>
+    switch code
+        3  => "FULL ALIGNMENT"
+        2  => "AVWAP LEADS"
+        -2 => "CLASSIC TRAP"
+        -3 => "FULL BEAR"
+        => "MIXED"
+
+px_stage_name(int stage) =>
+    switch stage
+        4 => "4 Triggered"
+        3 => "3 Ready"
+        2 => "2 Developing"
+        1 => "1 Early"
+        => "0 None"
+
+px_h_context_name(int hctx) =>
+    switch hctx
+        2  => "Bull +2"
+        1  => "Bull +1"
+        -1 => "Bear -1"
+        -2 => "Bear -2"
+        => "Mixed 0"
+
+px_dir_text(int state) =>
+    state == 1 ? "+" : state == -1 ? "-" : "0"
+
+px_h_context_detail(int hctx) =>
+    switch hctx
+        2  => "Bull +2 · Classic H+ and AVWAP H+ agree bullish"
+        1  => "Bull +1 · At least one H/60m context is bullish, but not fully aligned"
+        -1 => "Bear -1 · At least one H/60m context is bearish, but not fully aligned"
+        -2 => "Bear -2 · Classic H- and AVWAP H- agree bearish"
+        => "Mixed 0 · H/60m Classic and AVWAP context is neutral or conflicting"
+
+px_trend_name(int code) =>
+    switch code
+        2  => "Strong Uptrend"
+        1  => "Above EMA50"
+        -1 => "Below EMA50"
+        -2 => "Strong Downtrend"
+        => "Mixed"
+
+px_relationship_tooltip(int code) =>
+    switch code
+        3  => "FULL ALIGNMENT: Classic TFC and AVWAP TFC are bullish on D/W/M. This is the cleanest sponsorship state."
+        2  => "AVWAP LEADS: AVWAP TFC is fully bullish on D/W/M while Classic TFC is not yet fully confirmed. Often an earlier sponsorship state."
+        -2 => "CLASSIC TRAP: Classic TFC is fully bullish but AVWAP sponsorship is weak. Treat apparent strength cautiously."
+        -3 => "FULL BEAR: Classic and AVWAP are bearish across D/W/M. Long permission is poor."
+        => "MIXED: D/W/M Classic and AVWAP sponsorship are not fully aligned. Use Quality, STRAT timing, and Weekly In-Force for context."
+
+// Calculate native-60m pieces used by the parity engine.
+// v2.5.2 keeps canonical combo identity but gates combo timing authority through A/B/C/X quality.
+px_60_bundle() =>
+    float od = ta.valuewhen(timeframe.change("D"), open, 0)
+    float ow = ta.valuewhen(timeframe.change("W"), open, 0)
+    float om = ta.valuewhen(timeframe.change("M"), open, 0)
+    float oq = ta.valuewhen(timeframe.change("3M"), open, 0)
+
+    float vh = ta.vwap(hlc3, timeframe.change("60"))
+    float vd = ta.vwap(hlc3, timeframe.change("D"))
+    float vw = ta.vwap(hlc3, timeframe.change("W"))
+    float vm = ta.vwap(hlc3, timeframe.change("M"))
+    float vq = ta.vwap(hlc3, timeframe.change("3M"))
+
+    int ch = close > open ? 1 : close < open ? -1 : 0
+    int cd = close > od ? 1 : close < od ? -1 : 0
+    int cw = close > ow ? 1 : close < ow ? -1 : 0
+    int cm = close > om ? 1 : close < om ? -1 : 0
+    int cq = close > oq ? 1 : close < oq ? -1 : 0
+
+    int ah = close > vh ? 1 : close < vh ? -1 : 0
+    int ad = close > vd ? 1 : close < vd ? -1 : 0
+    int aw = close > vw ? 1 : close < vw ? -1 : 0
+    int am = close > vm ? 1 : close < vm ? -1 : 0
+    int aq = close > vq ? 1 : close < vq ? -1 : 0
+
+    string sb = classify_bar(high, low, high[1], low[1])
+    bool sgreen = close > open
+    bool sred = close < open
+    bool sinside = close <= high[1] and close >= low[1]
+    bool s2d = sb == "2D"
+    bool s2u = sb == "2U"
+    bool f2d_open = s2d and sgreen
+    bool f2d_rec = s2d and sinside
+    bool f2u_open = s2u and sred
+    bool f2u_rec = s2u and sinside
+    bool classic_all_up = cm == 1 and cw == 1 and cd == 1 and ch == 1
+    bool classic_all_dn = cm == -1 and cw == -1 and cd == -1 and ch == -1
+    bool ignore_rec = ftfc_override_reclaim and (classic_all_up or classic_all_dn)
+    bool f2d = failed_2_method == "Open" ? f2d_open : failed_2_method == "Reclaim" ? (f2d_rec and not ignore_rec) : failed_2_method == "Both" ? (f2d_open and f2d_rec and not ignore_rec) : (f2d_open or (f2d_rec and not ignore_rec))
+    bool f2u = failed_2_method == "Open" ? f2u_open : failed_2_method == "Reclaim" ? (f2u_rec and not ignore_rec) : failed_2_method == "Both" ? (f2u_open and f2u_rec and not ignore_rec) : (f2u_open or (f2u_rec and not ignore_rec))
+
+    [combo_id, combo_tier] = px_combo(high, low, high[1], low[1], high[2], low[2], high[3], low[3], high[4], low[4])
+    [combo_q, combo_held, combo_dir_ok, combo_close_loc] = combo_quality(open, high, low, close, high[1], low[1], true, combo_strong_close_pct)
+    bool combo_signal_ok = combo_id != 0 and combo_quality_pass(combo_q, combo_quality_mode)
+    bool prev_f2d_playbook = playbook_failed_2d(high[1], low[1], open[1], close[1], high[2], low[2])
+    int combo_playbook_id = combo_signal_ok and combo_id == 8 and prev_f2d_playbook ? 1 : combo_signal_ok and combo_id == 1 ? 2 : combo_signal_ok and combo_id == 5 ? 3 : 0
+    float crange = math.max(high - low, syminfo.mintick)
+    float cbody = math.max(math.abs(close - open), syminfo.mintick)
+    float uw = high - math.max(open, close)
+    float lw = math.min(open, close) - low
+    bool hammer = lw >= cbody * 2.0 and uw <= cbody * 0.5 and (close - low) / crange >= 0.65
+    bool inside1u = sb == "1" and sgreen
+    bool outside3u = sb == "3" and sgreen
+
+    int signal_id = f2d ? 2 : combo_signal_ok ? combo_id : hammer ? 13 : inside1u ? 14 : outside3u ? 15 : 0
+    int tier = f2d ? 3 : combo_signal_ok ? combo_tier : (hammer or inside1u or outside3u) ? 1 : 0
+    int signal_combo_quality = combo_signal_ok ? combo_q : 0
+    int signal_playbook_id = combo_signal_ok ? combo_playbook_id : 0
+    bool fresh_evt = signal_id > 0 and (signal_id[1] == 0 or signal_id != signal_id[1])
+    int bars_since = ta.barssince(fresh_evt)
+    bool recent_evt = not na(bars_since) and bars_since < px_strat_recent_bars
+
+    [close, ch, cd, cw, cm, cq, ah, ad, aw, am, aq, signal_id, tier, fresh_evt, recent_evt, f2u, signal_combo_quality, signal_playbook_id]
+
+[px_close60, px_classic_h, px_classic_d, px_classic_w, px_classic_m, px_classic_q, px_av_h, px_av_d, px_av_w, px_av_m, px_av_q, px_strat_signal_id, px_strat_tier, px_strat_fresh, px_strat_recent, px_failed2u, px_strat_combo_quality, px_strat_playbook_id] = request.security(
+     syminfo.tickerid,
+     "60",
+     px_60_bundle(),
+     barmerge.gaps_off,
+     barmerge.lookahead_off,
+     calc_bars_count = 500)
+
+// Daily support metrics and Year proxies — same architecture as the v2.3.1 screener.
+[px_d_close, px_d_past, px_d_close5, px_d_ema20, px_d_ema50, px_d_atr, px_d_rvol, px_y_open_proxy, px_y_avwap_proxy] = request.security(
+     syminfo.tickerid,
+     "D",
+     [close, close[px_rs_lookback], close[5], ta.ema(close, 20), ta.ema(close, 50), ta.atr(14), volume / math.max(ta.sma(volume, px_rvol_lookback), 1), ta.valuewhen(timeframe.change("12M"), open, 0), ta.vwap(hlc3, timeframe.change("12M"))],
+     barmerge.gaps_off,
+     barmerge.lookahead_off,
+     calc_bars_count = 270)
+
+[px_b_close, px_b_past, px_b_close5] = request.security(
+     px_rs_benchmark,
+     "D",
+     [close, close[px_rs_lookback], close[5]],
+     barmerge.gaps_off,
+     barmerge.lookahead_off,
+     calc_bars_count = 120)
+
+int px_classic_y = not na(px_y_open_proxy) and px_close60 > px_y_open_proxy ? 1 : not na(px_y_open_proxy) and px_close60 < px_y_open_proxy ? -1 : 0
+int px_av_y = not na(px_y_avwap_proxy) and px_close60 > px_y_avwap_proxy ? 1 : not na(px_y_avwap_proxy) and px_close60 < px_y_avwap_proxy ? -1 : 0
+
+int px_classic_core_bull = (px_classic_d == 1 ? 1 : 0) + (px_classic_w == 1 ? 1 : 0) + (px_classic_m == 1 ? 1 : 0)
+int px_classic_core_bear = (px_classic_d == -1 ? 1 : 0) + (px_classic_w == -1 ? 1 : 0) + (px_classic_m == -1 ? 1 : 0)
+int px_av_core_bull = (px_av_d == 1 ? 1 : 0) + (px_av_w == 1 ? 1 : 0) + (px_av_m == 1 ? 1 : 0)
+int px_av_core_bear = (px_av_d == -1 ? 1 : 0) + (px_av_w == -1 ? 1 : 0) + (px_av_m == -1 ? 1 : 0)
+int px_av_macro_bull = (px_av_q == 1 ? 1 : 0) + (px_av_y == 1 ? 1 : 0)
+int px_av_macro_bear = (px_av_q == -1 ? 1 : 0) + (px_av_y == -1 ? 1 : 0)
+
+bool px_full_bull = px_classic_core_bull == 3 and px_av_core_bull == 3
+bool px_avwap_leads = px_av_core_bull == 3 and px_classic_core_bull < 3
+bool px_classic_trap = px_classic_core_bull == 3 and px_av_core_bull <= 1
+bool px_full_bear = px_classic_core_bear == 3 and px_av_core_bear == 3
+int px_relationship = px_full_bull ? 3 : px_avwap_leads ? 2 : px_classic_trap ? -2 : px_full_bear ? -3 : 1
+
+bool px_wif_up = not na(ph_w) and px_close60 > ph_w
+bool px_wif_dn = not na(pl_w) and px_close60 < pl_w
+int px_weekly_if = px_wif_up ? 1 : px_wif_dn ? -1 : 0
+
+bool px_long_core_constructive = px_av_core_bull >= 2 and px_classic_core_bull >= 2 and not px_classic_trap and not px_full_bear
+bool px_action_long = px_long_core_constructive and px_wif_up
+bool px_prep_long = px_long_core_constructive and not px_wif_up
+int px_h_execution = px_classic_h == 1 and px_av_h == 1 ? 2 : px_classic_h == -1 and px_av_h == -1 ? -2 : px_classic_h == 1 or px_av_h == 1 ? 1 : px_classic_h == -1 or px_av_h == -1 ? -1 : 0
+
+float px_weekly_high_dist = not na(ph_w) and px_close60 > 0 ? (ph_w / px_close60 - 1.0) * 100.0 : na
+bool px_near_weekly_long = px_prep_long and not na(px_weekly_high_dist) and px_weekly_high_dist >= 0 and px_weekly_high_dist <= px_ready_weekly_pct
+bool px_early_long = px_av_core_bull >= px_early_av_core_min and px_av_macro_bull >= px_early_macro_min and not px_classic_trap and not px_full_bear
+bool px_developing_long = px_av_core_bull >= 2 and px_classic_core_bull >= px_develop_classic_min and not px_classic_trap and not px_full_bear
+int px_long_stage = px_action_long ? 4 : px_near_weekly_long ? 3 : px_developing_long ? 2 : px_early_long ? 1 : 0
+
+float px_stock_perf = not na(px_d_past) and px_d_past != 0 ? (px_d_close / px_d_past - 1.0) * 100.0 : na
+float px_bench_perf = not na(px_b_past) and px_b_past != 0 ? (px_b_close / px_b_past - 1.0) * 100.0 : na
+float px_rs_edge = not na(px_stock_perf) and not na(px_bench_perf) ? px_stock_perf - px_bench_perf : na
+float px_stock_perf5 = not na(px_d_close5) and px_d_close5 != 0 ? (px_d_close / px_d_close5 - 1.0) * 100.0 : na
+float px_bench_perf5 = not na(px_b_close5) and px_b_close5 != 0 ? (px_b_close / px_b_close5 - 1.0) * 100.0 : na
+float px_rs_edge5 = not na(px_stock_perf5) and not na(px_bench_perf5) ? px_stock_perf5 - px_bench_perf5 : na
+float px_rs_accel = not na(px_rs_edge) and not na(px_rs_edge5) ? px_rs_edge5 - px_rs_edge : na
+float px_extension_atr = not na(px_d_atr) and px_d_atr > 0 ? (px_d_close - px_d_ema20) / px_d_atr : na
+bool px_extended_long = not na(px_extension_atr) and px_extension_atr > px_extension_caution
+int px_trend_code = px_d_close > px_d_ema20 and px_d_ema20 > px_d_ema50 ? 2 : px_d_close > px_d_ema50 ? 1 : px_d_close < px_d_ema20 and px_d_ema20 < px_d_ema50 ? -2 : px_d_close < px_d_ema50 ? -1 : 0
+
+float px_avcore_pts = px_av_core_bull / 3.0 * 25.0
+float px_classic_pts = px_classic_core_bull / 3.0 * 20.0
+float px_rel_pts = px_full_bull ? 15.0 : px_avwap_leads ? 13.0 : px_classic_trap or px_full_bear ? 0.0 : px_av_core_bull >= 2 and px_classic_core_bull >= 2 ? 9.0 : px_av_core_bull >= 2 ? 6.0 : 2.0
+float px_macro_pts = px_av_macro_bull / 2.0 * 10.0
+float px_weekly_pts = px_wif_up ? 10.0 : px_near_weekly_long ? 7.0 : px_prep_long ? 4.0 : 0.0
+float px_exec_pts = px_h_execution == 2 ? 5.0 : px_h_execution == 1 ? 2.5 : 0.0
+float px_rs_pts = not na(px_rs_edge) ? px_clamp((px_rs_edge + 5.0) / 15.0, 0.0, 1.0) * 10.0 : 0.0
+float px_rvol_pts = not na(px_d_rvol) ? px_clamp((px_d_rvol - 0.5) / 1.0, 0.0, 1.0) * 5.0 : 0.0
+float px_quality_raw = px_avcore_pts + px_classic_pts + px_rel_pts + px_macro_pts + px_weekly_pts + px_exec_pts + px_rs_pts + px_rvol_pts
+float px_quality = px_clamp(px_quality_raw - (px_extended_long ? 15.0 : 0.0), 0.0, 100.0)
+
+bool px_not_severe = na(px_extension_atr) or px_extension_atr <= px_severe_extension
+bool px_preset1 = px_long_stage >= 2 and px_quality >= px_quality_min and not px_classic_trap and not px_full_bear and px_not_severe
+bool px_preset2 = px_full_bull and px_long_stage >= 2 and px_quality >= px_aplus_min and px_not_severe
+bool px_preset3 = px_avwap_leads and px_av_core_bull == 3 and px_classic_core_bull >= 1 and px_classic_core_bull <= 2 and px_av_macro_bull >= 1 and px_quality >= px_early_score_min and px_not_severe
+bool px_preset4 = px_preset1 and px_strat_tier >= px_strat_tier_min_p4
+
+// v2.5.3 execution-authority bridge. Tier identity is NOT rewritten.
+// A Grade-A Tier-1 continuation can receive execution authority only when the larger context is exceptional.
+bool px_is_t1_cont = (px_strat_signal_id >= 10 and px_strat_signal_id <= 12) or px_strat_signal_id == 16
+bool px_gradeA_cont_authority = px_is_t1_cont and px_strat_combo_quality == 4 and px_strat_fresh and px_full_bull and px_long_stage == 4 and px_wif_up and px_h_execution >= 1 and px_preset1 and px_not_severe
+// Trend Relay allows Grade A/B continuation participation when the established trend context is strong.
+// It does not rewrite Tier identity: 2-2 / 2-1-2 / 2-2-2 continuation remain Tier 1.
+bool px_trend_relay_ab = px_is_t1_cont and px_strat_combo_quality >= 3 and px_strat_fresh and px_preset1 and px_long_stage == 4 and px_wif_up and px_h_execution >= 1 and px_trend_code >= 1 and px_not_severe and not px_classic_trap and not px_full_bear
+
+// Inside 1U is compression/setup, never a breakout by itself. Strong context promotes it only to ARMED.
+bool px_inside1u_armed = px_strat_signal_id == 14 and px_strat_fresh and px_preset1 and not px_classic_trap and not px_full_bear
+
+// ══════════════════════════════════════════════════ UNIFIED DECISION DASHBOARD v2.5.7 ══════════════════════════════════════════════════
+// Presentation-only integration. No canonical signal methodology is changed here.
+// CONTEXT = sponsorship authority | OPPORTUNITY = STRAT structure | EXECUTION = 60m screener parity.
+var g_ud = "🧠 NOW STRAT · Unified Decision Dashboard"
+ud_show = input.bool(true, "Show Unified Dashboard", group=g_ud)
+ud_position = input.string("Top Center", "Position", options=["Bottom Center","Bottom Left","Bottom Right","Middle Center","Middle Left","Middle Right","Top Center","Top Left","Top Right"], group=g_ud)
+ud_size = input.string("Small", "Text Size", options=["Tiny","Small","Normal","Large"], group=g_ud)
+ud_theme = input.string("Auto", "Theme", options=["Auto","Dark","Light"], group=g_ud)
+ud_show_4h = input.bool(false, "Include 4H in compact MTF line", tooltip="60m is the lowest canonical execution timeframe. 4H is optional bridge context.", group=g_ud)
+ud_width_mode = input.string("Narrow", "Dashboard Width", options=["Narrow","Standard","Wide"], tooltip="Controls the overall table width without changing any trading logic. Narrow is best for smaller screens.", group=g_ud)
+
+ud_is_dark() =>
+    float rr = color.r(chart.bg_color)
+    float gg = color.g(chart.bg_color)
+    float bb = color.b(chart.bg_color)
+    float lum = (rr + gg + bb) / 3.0
+    ud_theme == "Dark" ? true : ud_theme == "Light" ? false : lum < 128.0
+
+ud_bar(float h0, float l0, float hp0, float lp0) =>
+    classify_bar(h0, l0, hp0, lp0)
+
+// Daily Holy Grail breakout authority is intentionally calculated before the execution-state
+// function so a confirmed Daily 3→1→2U breakout can take precedence over a later 60m Inside-1.
+[px_daily_combo_lbl, px_daily_combo_bull] = get_combo(h3, l3, h3p, l3p, h3b2, l3b2, h3b3, l3b3, h3b4, l3b4)
+[px_daily_grade, px_daily_held, px_daily_dir_ok, px_daily_close_loc] = combo_quality(o3, h3, l3, c3, h3p, l3p, px_daily_combo_bull, combo_strong_close_pct)
+bool px_daily_quality_pass = px_daily_combo_lbl != "" and combo_quality_pass(px_daily_grade, combo_quality_mode)
+bool px_daily_hg_breakout = px_daily_combo_lbl == "312 Bull Rev" and px_daily_quality_pass
+bool px_daily_hg_action = px_daily_hg_breakout and px_preset1 and px_long_stage == 4 and px_wif_up and px_h_execution >= 1 and px_not_severe and not px_classic_trap and not px_full_bear
+bool px_daily_rj_breakout = px_daily_combo_lbl == "2222 Bull RJ" and px_daily_quality_pass
+bool px_daily_rj_action = px_daily_rj_breakout and px_preset1 and px_long_stage == 4 and px_wif_up and px_h_execution >= 1 and px_not_severe and not px_classic_trap and not px_full_bear
+
+// Daily Actionable Playbook I identities. Daily supplies swing structure; 60m still refines execution.
+bool px_daily_prev_f2d = playbook_failed_2d(h3p, l3p, o3p, c3p, h3b2, l3b2)
+bool px_daily_rt_breakout = px_daily_combo_lbl == "22 Bull Rev" and px_daily_prev_f2d and px_daily_quality_pass
+bool px_daily_ir_breakout = px_daily_combo_lbl == "212 Bull Rev" and px_daily_quality_pass
+bool px_daily_rs_breakout = px_daily_combo_lbl == "122 Bull Rev" and px_daily_quality_pass
+bool px_daily_rt_bear_breakout = px_daily_combo_lbl == "22 Bear Rev" and playbook_failed_2u(h3p, l3p, o3p, c3p, h3b2, l3b2) and px_daily_quality_pass
+bool px_daily_ir_bear_breakout = px_daily_combo_lbl == "212 Bear Rev" and px_daily_quality_pass
+bool px_daily_rvs_bear_breakout = px_daily_combo_lbl == "122 Bear Rev" and px_daily_quality_pass
+int px_daily_bear_playbook_id = px_daily_rt_bear_breakout ? 1 : px_daily_ir_bear_breakout ? 2 : px_daily_rvs_bear_breakout ? 3 : 0
+bool px_daily_bear_playbook = px_daily_bear_playbook_id > 0
+int px_daily_playbook_id = px_daily_rt_breakout ? 1 : px_daily_ir_breakout ? 2 : px_daily_rs_breakout ? 3 : 0
+bool px_daily_playbook_breakout = px_daily_playbook_id > 0
+bool px_daily_playbook_action = px_daily_playbook_breakout and px_preset1 and px_long_stage == 4 and px_wif_up and px_h_execution >= 1 and px_not_severe and not px_classic_trap and not px_full_bear
+
+string px_daily_bt0 = classify_bar(h3, l3, h3p, l3p)
+string px_daily_bt1 = classify_bar(h3p, l3p, h3b2, l3b2)
+bool px_daily_f2d_now = playbook_failed_2d(h3, l3, o3, c3, h3p, l3p)
+bool px_daily_rt_armed = px_daily_f2d_now and px_daily_bt1 != "1"
+bool px_daily_ir_armed = px_daily_bt0 == "1" and px_daily_bt1 == "2D"
+bool px_daily_rs_armed = px_daily_bt1 == "1" and px_daily_bt0 == "2D"
+
+ud_exec_state() =>
+    string st = "NO QUALITY EDGE"
+    if px_full_bear or px_classic_trap
+        st := "AVOID LONG"
+    else if px_extended_long and px_preset1
+        st := "MANAGE / EXTENDED"
+    else if px_daily_bear_playbook
+        st := px_daily_bear_playbook_id == 1 ? "SELL / PROTECT · RECLAIM TRAP" : px_daily_bear_playbook_id == 2 ? "SELL / PROTECT · INSIDE REV" : "SELL / PROTECT · REVSTRAT"
+    else if px_daily_rj_action
+        st := "BUY / ADD · RANDY JACKSON"
+    else if px_daily_hg_action
+        st := "HOLY GRAIL BREAKOUT"
+    else if px_daily_playbook_action
+        st := px_daily_playbook_id == 1 ? "RECLAIM TRAP BO" : px_daily_playbook_id == 2 ? "INSIDE REVERSAL BO" : "REVSTRAT BO"
+    else if px_daily_rj_breakout
+        st := "RJ BUY / WAIT 60m"
+    else if px_daily_hg_breakout
+        st := "HG BREAKOUT / WAIT 60m"
+    else if px_daily_playbook_breakout
+        st := px_daily_playbook_id == 1 ? "RT BO / WAIT 60m" : px_daily_playbook_id == 2 ? "IR BO / WAIT 60m" : "RVS BO / WAIT 60m"
+    else if px_trend_relay_ab
+        st := "BUY / ADD · TREND RELAY"
+    else if px_preset4 and px_long_stage == 4 and px_strat_fresh and px_strat_playbook_id > 0
+        st := px_strat_playbook_id == 1 ? "BUY · RECLAIM TRAP" : px_strat_playbook_id == 2 ? "BUY · INSIDE REVERSAL" : "BUY · REVSTRAT"
+    else if px_preset4 and px_long_stage == 4
+        st := "BUY / ADD LONG"
+    else if px_inside1u_armed
+        st := "ARMED / WAIT BREAK"
+    else if px_preset1 and px_long_stage == 3
+        st := "READY / PREP"
+    else if px_preset3
+        st := "EARLY WATCH"
+    else if px_preset1
+        st := "WATCH / NO TRIGGER"
+    else if px_long_stage >= 2
+        st := "DEVELOPING"
+    st
+
+ud_next_text(string st) =>
+    string nx = "Wait for sponsorship + a clean 60m STRAT trigger."
+    if st == "BUY / ADD LONG"
+        nx := "Hold above the 60m trigger; add only on clean follow-through."
+    else if str.contains(st, "RECLAIM TRAP")
+        nx := str.contains(st, "WAIT 60m") ? "Daily Reclaim Trap breakout passed quality; wait for clean 60m execution confirmation." : "Failed-2 trap has resolved through the opposite 2; hold the reclaim/trigger and require follow-through."
+    else if str.contains(st, "INSIDE REVERSAL")
+        nx := str.contains(st, "WAIT 60m") ? "Daily 2-1-2 Inside Reversal passed quality; wait for clean 60m execution confirmation." : "2-1-2 reversal is active; use the Inside-1 / trigger structure for risk and require follow-through."
+    else if str.contains(st, "REVSTRAT")
+        nx := str.contains(st, "WAIT 60m") ? "Daily 1-2-2 RevStrat passed quality; wait for clean 60m execution confirmation." : "RevStrat false-break reversal is active; hold above the trigger and avoid chasing extension."
+    else if st == "RT BO / WAIT 60m"
+        nx := "Daily Reclaim Trap breakout passed quality; wait for clean 60m execution confirmation."
+    else if st == "IR BO / WAIT 60m"
+        nx := "Daily 2-1-2 Inside Reversal passed quality; wait for clean 60m execution confirmation."
+    else if st == "RVS BO / WAIT 60m"
+        nx := "Daily 1-2-2 RevStrat passed quality; wait for clean 60m execution confirmation."
+    else if st == "BUY / ADD · TREND RELAY"
+        nx := "A/B continuation has trend-participation authority; hold the trigger, require follow-through, and do not chase extension."
+    else if str.contains(st, "SELL / PROTECT")
+        nx := "Bearish playbook reversal passed quality. Protect long exposure / exit according to your campaign rules; treat it as a short only if a separate short-permission framework allows it."
+    else if st == "BUY / ADD · RANDY JACKSON"
+        nx := "Daily Randy Jackson continuation passed quality and context; treat as a BUY/ADD continuation trigger and require follow-through."
+    else if st == "RJ BUY / WAIT 60m"
+        nx := "Daily Randy Jackson passed quality; wait for clean 60m execution confirmation before adding risk."
+    else if st == "HOLY GRAIL BREAKOUT"
+        nx := "Daily 3-1-2 Holy Grail breakout is confirmed; use 60m for execution/add refinement, not to downgrade the Daily trigger."
+    else if st == "HG BREAKOUT / WAIT 60m"
+        nx := "Daily Holy Grail breakout is valid, but execution context is incomplete; wait for clean 60m confirmation."
+    else if st == "ARMED / WAIT BREAK"
+        nx := "Inside 1U is compression only; wait for a clean break of the mother-bar / setup high."
+    else if st == "READY / PREP"
+        nx := "Wait for Weekly In-Force / prior-week commitment and a clean 60m trigger."
+    else if st == "EARLY WATCH"
+        nx := "AVWAP leads; wait for Classic confirmation or fresh Tier 2–3 timing."
+    else if st == "WATCH / NO TRIGGER"
+        nx := "Sponsorship is constructive; wait for a fresh Tier 2–3 STRAT trigger or qualified Grade-A continuation."
+    else if st == "MANAGE / EXTENDED"
+        nx := "Do not chase; manage the campaign and wait for location to improve."
+    else if st == "AVOID LONG"
+        nx := "No new long until D/W/M sponsorship repairs."
+    else if st == "DEVELOPING"
+        nx := "Structure is developing; require stronger quality and 60m timing."
+    nx
+
+string ud_m_bar = ud_bar(h1, l1, h1p, l1p)
+string ud_w_bar = ud_bar(h2, l2, h2p, l2p)
+string ud_d_bar = ud_bar(h3, l3, h3p, l3p)
+string ud_4h_bar = ud_bar(h4, l4, h4p, l4p)
+string ud_60_bar = ud_bar(h5, l5, h5p, l5p)
+string ud_60_as = get_as_string(h5, l5, h5p, l5p, h5b2, l5b2, h5b3, l5b3, o5, c5, o5p, c5p, o5b2, c5b2)
+string ud_mtf = "M " + ud_m_bar + " · W " + ud_w_bar + " · D " + ud_d_bar + (ud_show_4h ? " · 4H " + ud_4h_bar : "") + " · 60 " + ud_60_bar
+string ud_combo_grade = px_strat_combo_quality > 0 ? " · Grade " + combo_quality_letter(px_strat_combo_quality) : ""
+string ud_playbook_60 = px_strat_playbook_id > 0 ? playbook_short(px_strat_playbook_id) + " · " : ""
+string ud_setup = px_strat_tier > 0 ? "T" + str.tostring(px_strat_tier) + " · " + ud_playbook_60 + px_signal_name(px_strat_signal_id) + ud_combo_grade : "NO 60m STRAT TRIGGER"
+string ud_quality = "Q " + str.tostring(px_quality, "#.0") + " · S" + str.tostring(px_long_stage) + " " + str.upper(px_stage_name(px_long_stage))
+
+// Daily swing structure is evidence; 60m remains the execution refinement layer.
+string ud_daily_combo_lbl = px_daily_combo_lbl
+bool ud_daily_combo_bull = px_daily_combo_bull
+int ud_daily_grade = px_daily_grade
+bool ud_daily_hg_armed = classify_bar(h3, l3, h3p, l3p) == "1" and classify_bar(h3p, l3p, h3b2, l3b2) == "3"
+bool ud_daily_nirvana = classify_bar(h3, l3, h3p, l3p) == "3" and classify_bar(h3p, l3p, h3b2, l3b2) == "1"
+string ud_daily_grade_txt = ud_daily_combo_lbl != "" and ud_daily_grade > 0 ? " · " + combo_quality_letter(ud_daily_grade) : ""
+string ud_daily_playbook_state = px_daily_playbook_id == 1 ? "RECLAIM TRAP BO · 2-2" + ud_daily_grade_txt : px_daily_playbook_id == 2 ? "INSIDE REV BO · 2-1-2" + ud_daily_grade_txt : px_daily_playbook_id == 3 ? "REVSTRAT BO · 1-2-2" + ud_daily_grade_txt : ""
+string ud_daily_armed_state = px_daily_rt_armed ? "RECLAIM TRAP · F2D ARMED" : px_daily_rs_armed ? "REVSTRAT · 1-2D ARMED" : px_daily_ir_armed ? "INSIDE REVERSAL · 2D-1 ARMED" : ""
+string ud_daily_state = px_daily_rj_breakout ? "RANDY JACKSON · 2-2-2-2" + ud_daily_grade_txt : px_daily_hg_breakout ? "HOLY GRAIL BREAKOUT · 3-1-2" + ud_daily_grade_txt : px_daily_playbook_breakout ? ud_daily_playbook_state : ud_daily_armed_state != "" ? ud_daily_armed_state : ud_daily_hg_armed ? "3-1 HOLY GRAIL · ARMED" : ud_daily_nirvana ? "1-3 NIRVANA" : ud_daily_combo_lbl != "" ? ud_daily_combo_lbl + ud_daily_grade_txt : "Bar " + ud_d_bar
+string ud_structure = "D: " + ud_daily_state + " · 60m AS: " + ud_60_as + (px_strat_playbook_id > 0 ? " · " + playbook_short(px_strat_playbook_id) : px_strat_signal_id == 2 ? " · F2D" : px_strat_signal_id >= 1 and px_strat_signal_id <= 9 ? " · REV" : px_strat_signal_id >= 10 and px_strat_signal_id <= 12 ? " · CONT" : px_strat_signal_id == 14 ? " · INSIDE ARMED" : "")
+string ud_location = "WHi " + (na(px_weekly_high_dist) ? "N/A" : px_signed(px_weekly_high_dist, "#.0") + "%") + (px_strat_fresh ? " · FRESH" : px_strat_recent ? " · RECENT" : "")
+string ud_core = "AVWAP TFC: D" + px_dir_text(px_av_d) + " W" + px_dir_text(px_av_w) + " M" + px_dir_text(px_av_m) + " · Classic TFC: D" + px_dir_text(px_classic_d) + " W" + px_dir_text(px_classic_w) + " M" + px_dir_text(px_classic_m)
+string ud_macro_wif = "AVWAP Macro: Q" + px_dir_text(px_av_q) + " Y" + px_dir_text(px_av_y) + " · Weekly In-Force: " + (px_wif_up ? "UP" : px_wif_dn ? "DOWN" : "WAIT")
+string ud_rs_rvol = "RS Edge " + px_signed(px_rs_edge, "#.0") + "% · Daily RVOL " + (na(px_d_rvol) ? "N/A" : str.tostring(px_d_rvol, "#.00") + "x")
+string ud_presets = "P1 " + (px_preset1 ? "✓" : "—") + " · P2 " + (px_preset2 ? "✓" : "—") + " · P3 " + (px_preset3 ? "✓" : "—") + " · P4 " + (px_preset4 ? "✓" : "—") + (px_trend_relay_ab ? " · TR-A/B✓" : "") + (px_strat_playbook_id > 0 ? " · " + playbook_short(px_strat_playbook_id) + "✓" : "")
+string ud_timing = "Tier " + str.tostring(px_strat_tier) + " · Signal " + str.tostring(px_strat_signal_id) + " " + (px_strat_playbook_id > 0 ? playbook_short(px_strat_playbook_id) + " · " : "") + px_signal_name(px_strat_signal_id) + ud_combo_grade + (px_strat_fresh ? " · FRESH" : px_strat_recent ? " · RECENT" : "")
+string ud_hctx = px_h_context_detail(px_h_execution)
+string ud_risk = "Extension " + px_signed(px_extension_atr, "#.00") + " ATR vs EMA20 · Trend " + str.tostring(px_trend_code) + " " + px_trend_name(px_trend_code)
+string ud_exec = ud_exec_state()
+string ud_decision = px_relationship_name(px_relationship) + " · " + ud_quality + " · " + (px_wif_up ? "WIF UP" : px_wif_dn ? "WIF DOWN" : "WIF WAIT") + " · " + ud_setup + " · " + ud_exec
+string ud_next = ud_next_text(ud_exec)
+
+var table ud_tbl = table.new(get_table_pos(ud_position), 8, 9, border_width=0)
+if barstate.isfirst
+    // Three information zones separated by dedicated vertical divider columns.
+    table.merge_cells(ud_tbl, 0, 0, 1, 0)
+    table.merge_cells(ud_tbl, 3, 0, 4, 0)
+    table.merge_cells(ud_tbl, 6, 0, 7, 0)
+
+    // Full-width DECISION and NEXT strips with dedicated horizontal divider rows.
+    table.merge_cells(ud_tbl, 0, 5, 7, 5)
+    table.merge_cells(ud_tbl, 0, 6, 7, 6)
+    table.merge_cells(ud_tbl, 0, 7, 7, 7)
+    table.merge_cells(ud_tbl, 0, 8, 7, 8)
+if barstate.islast
+    if ud_show
+        bool ud_dark = ud_is_dark()
+        color ud_bg = ud_dark ? color.new(#131722, 0) : color.new(#ffffff, 0)
+        color ud_bg2 = ud_dark ? color.new(#171c28, 0) : color.new(#f4f6f8, 0)
+        color ud_lbl = ud_dark ? color.new(#aab2c0, 0) : color.new(#4a5260, 0)
+        color ud_val = ud_dark ? color.white : color.new(#111318, 0)
+        color ud_div = ud_dark ? color.new(#2b3240, 0) : color.new(#d9dee6, 0)
+        color ud_context_hdr = color.new(#1e4f78, 0)
+        color ud_opp_hdr = color.new(#0f6b67, 0)
+        color ud_exec_hdr = color.new(#17603e, 0)
+        color ud_green = #20c779
+        color ud_amber = color.orange
+        color ud_red = #e95454
+        string ud_ts = get_size(ud_size)
+
+        int ud_label_w = ud_width_mode == "Narrow" ? 8 : ud_width_mode == "Wide" ? 11 : 9
+        int ud_value_w_context = ud_width_mode == "Narrow" ? 21 : ud_width_mode == "Wide" ? 32 : 26
+        int ud_value_w_opp = ud_width_mode == "Narrow" ? 24 : ud_width_mode == "Wide" ? 34 : 28
+        int ud_value_w_exec = ud_width_mode == "Narrow" ? 19 : ud_width_mode == "Wide" ? 30 : 24
+        color ud_neutral_status = ud_dark ? color.new(#465062, 0) : color.new(#6f7886, 0)
+        color ud_watch_status = ud_dark ? color.new(#31556d, 0) : color.new(#4d748e, 0)
+        bool ud_wait_60 = str.contains(ud_exec, "WAIT 60m")
+        bool ud_playbook_action = not ud_wait_60 and (str.contains(ud_exec, "RECLAIM TRAP") or str.contains(ud_exec, "INSIDE REVERSAL") or str.contains(ud_exec, "REVSTRAT"))
+        bool ud_green_action = ud_exec == "BUY / ADD LONG" or ud_exec == "BUY / ADD · TREND RELAY" or ud_exec == "BUY / ADD · RANDY JACKSON" or ud_exec == "HOLY GRAIL BREAKOUT" or ud_playbook_action
+        bool ud_amber_state = ud_exec == "MANAGE / EXTENDED" or ud_exec == "READY / PREP" or ud_exec == "EARLY WATCH" or ud_exec == "ARMED / WAIT BREAK" or ud_exec == "HG BREAKOUT / WAIT 60m" or ud_wait_60
+        color ud_exec_bg = ud_green_action ? ud_green : ud_exec == "AVOID LONG" ? ud_red : ud_amber_state ? ud_amber : (ud_exec == "WATCH / NO TRIGGER" or ud_exec == "DEVELOPING") ? ud_watch_status : ud_neutral_status
+        color ud_rel_color = px_relationship >= 2 ? ud_green : px_relationship < 0 ? ud_red : ud_amber
+        color ud_setup_color = px_strat_tier >= 3 ? ud_green : px_strat_tier >= 2 ? color.lime : px_strat_tier == 1 ? ud_amber : ud_val
+
+        // ── Zone headers ─────────────────────────────────────────────────────────────
+        table.cell(ud_tbl, 0, 0, "CONTEXT", text_color=color.white, bgcolor=ud_context_hdr, text_size=ud_ts)
+        table.cell(ud_tbl, 3, 0, "OPPORTUNITY", text_color=color.white, bgcolor=ud_opp_hdr, text_size=ud_ts)
+        table.cell(ud_tbl, 6, 0, "EXECUTION", text_color=color.white, bgcolor=ud_exec_hdr, text_size=ud_ts)
+
+        // Dedicated vertical dividers make the three zones read as separate columns.
+        for rr = 0 to 4
+            table.cell(ud_tbl, 2, rr, "", bgcolor=ud_div, width=1, text_size=ud_ts)
+            table.cell(ud_tbl, 5, rr, "", bgcolor=ud_div, width=1, text_size=ud_ts)
+
+        // ── Row 1: answer-first state ─────────────────────────────────────────────────
+        table.cell(ud_tbl, 0, 1, "Sponsorship", text_color=ud_lbl, bgcolor=ud_bg, text_size=ud_ts, width=ud_label_w, tooltip="Primary D/W/M sponsorship relationship between Classic TFC and AVWAP TFC. Context only; it does not create an entry by itself.")
+        table.cell(ud_tbl, 1, 1, px_relationship_name(px_relationship), text_color=ud_rel_color, bgcolor=ud_bg, text_size=ud_ts, width=ud_value_w_context, tooltip=px_relationship_tooltip(px_relationship))
+
+        table.cell(ud_tbl, 3, 1, "60m STRAT", text_color=ud_lbl, bgcolor=ud_bg, text_size=ud_ts, width=ud_label_w, tooltip="Current 60m STRAT timing family. Tier 3 = Prime, Tier 2 = Strong, Tier 1 = Context/Continuation, Tier 0 = no current bullish STRAT timing signal.")
+        table.cell(ud_tbl, 4, 1, ud_setup, text_color=ud_setup_color, bgcolor=ud_bg, text_size=ud_ts, width=ud_value_w_opp, tooltip="Named canonical 60m STRAT timing signal. RT/IR/RVS prefixes identify the high-priority playbooks; TR denotes Trend Relay continuation authority. Daily structure is shown separately below; 60m owns execution timing.")
+
+        table.cell(ud_tbl, 6, 1, "NOW", text_color=ud_lbl, bgcolor=ud_bg, text_size=ud_ts, width=ud_label_w, tooltip="Current action-oriented summary. This is the only dashboard zone that owns ACTION / READY / WATCH / AVOID language.")
+        table.cell(ud_tbl, 7, 1, ud_exec, text_color=color.white, bgcolor=ud_exec_bg, text_size=ud_ts, width=ud_value_w_exec, tooltip="Execution state derived from existing Quality, Stage, Presets, extension, sponsorship, and STRAT timing. It is a decision-support summary, not an automated order.")
+
+        // ── Row 2: core evidence ───────────────────────────────────────────────────────
+        table.cell(ud_tbl, 0, 2, "D/W/M Sponsorship", text_color=ud_lbl, bgcolor=ud_bg2, text_size=ud_ts, tooltip="Full directional state by timeframe. '+' means current price is above that timeframe's open/AVWAP reference; '-' means below; '0' means neutral/unavailable.")
+        table.cell(ud_tbl, 1, 2, ud_core, text_color=px_av_core_bull >= 2 and px_classic_core_bull >= 2 ? ud_green : ud_amber, bgcolor=ud_bg2, text_size=ud_ts, tooltip="AVWAP TFC shows institutional cost-basis sponsorship on D/W/M. Classic TFC shows price relative to the current D/W/M opens. D/W/M are the canonical Core.")
+
+        table.cell(ud_tbl, 3, 2, "Quality / MTF", text_color=ud_lbl, bgcolor=ud_bg2, text_size=ud_ts, tooltip="Quality is the 0–100 ranking score. Stage: 1 Early, 2 Developing, 3 Ready, 4 Triggered. M/W/D/60 show current STRAT bar classifications.")
+        table.cell(ud_tbl, 4, 2, ud_quality + " · " + ud_mtf, text_color=px_quality >= px_quality_min ? ud_green : ud_amber, bgcolor=ud_bg2, text_size=ud_ts, tooltip="Use Quality to rank otherwise eligible candidates, not as a standalone buy signal. Daily is the primary swing structure; 60m is the lowest execution timeframe.")
+
+        table.cell(ud_tbl, 6, 2, "Presets / 60m Timing", text_color=ud_lbl, bgcolor=ud_bg2, text_size=ud_ts, tooltip="P1 = Quality Long; P2 = A+ Alignment; P3 = Early Quality; P4 = Quality + STRAT. Tier/Signal/Fresh describe the current 60m timing condition.")
+        table.cell(ud_tbl, 7, 2, ud_presets + " · " + ud_timing, text_color=px_preset4 ? ud_green : ud_val, bgcolor=ud_bg2, text_size=ud_ts, tooltip="P4 requires P1 Quality plus STRAT Tier ≥ the configured threshold. FRESH means the named signal formed on the current 60m bar; RECENT means it occurred within the recent lookback window.")
+
+        // ── Row 3: structural evidence ─────────────────────────────────────────────────
+        table.cell(ud_tbl, 0, 3, "Macro / Weekly IF", text_color=ud_lbl, bgcolor=ud_bg, text_size=ud_ts, tooltip="Q/Y AVWAP is macro structure. Weekly In-Force is commitment: UP above prior-week high, DOWN below prior-week low, WAIT while neither has broken.")
+        table.cell(ud_tbl, 1, 3, ud_macro_wif, text_color=px_wif_up ? ud_green : px_wif_dn ? ud_red : ud_amber, bgcolor=ud_bg, text_size=ud_ts, tooltip="Q/Y provide larger structural context and do not trigger entries. Weekly In-Force is the higher-timeframe commitment layer used by the swing/position workflow.")
+
+        table.cell(ud_tbl, 3, 3, "Daily / 60m", text_color=ud_lbl, bgcolor=ud_bg, text_size=ud_ts, tooltip="Daily swing structure plus current 60m actionable sequence. HG/Nirvana remain visible. v2.5.8 names Reclaim Trap (Failed-2→opposite 2), Inside Reversal (2-1-2), and RevStrat (1-2-2) setup/breakout states.")
+        table.cell(ud_tbl, 4, 3, ud_structure, text_color=ud_val, bgcolor=ud_bg, text_size=ud_ts, tooltip="Daily describes swing structure; 60m AS is the execution sequence. This separation prevents a Daily trigger from being mistaken for a 60m trigger.")
+
+        table.cell(ud_tbl, 6, 3, "H / 60m Context", text_color=ud_lbl, bgcolor=ud_bg, text_size=ud_ts, tooltip="H/60m context compares Classic and AVWAP direction on the execution timeframe. +2 = both bullish; +1 = partial bullish; -1 = partial bearish; -2 = both bearish; 0 = mixed/neutral.")
+        table.cell(ud_tbl, 7, 3, ud_hctx, text_color=px_h_execution >= 1 ? ud_green : px_h_execution < 0 ? ud_red : ud_amber, bgcolor=ud_bg, text_size=ud_ts, tooltip=px_h_context_detail(px_h_execution))
+
+        // ── Row 4: participation, timing/location, and chase risk ──────────────────────
+        table.cell(ud_tbl, 0, 4, "Participation", text_color=ud_lbl, bgcolor=ud_bg2, text_size=ud_ts, tooltip="RS Edge and Daily RVOL are participation/ranking evidence. They contribute to Quality but are intentionally not hard preset gates.")
+        table.cell(ud_tbl, 1, 4, ud_rs_rvol, text_color=(not na(px_rs_edge) and px_rs_edge > 0 and not na(px_d_rvol) and px_d_rvol >= 1.0) ? ud_green : ud_amber, bgcolor=ud_bg2, text_size=ud_ts, tooltip="RS Edge = stock performance minus benchmark performance over the configured RS lookback. Positive is leadership. Daily RVOL = today's volume relative to its daily average; 1.00x is normal, >1.00x is above-normal participation.")
+
+        table.cell(ud_tbl, 3, 4, "Timing / Location", text_color=ud_lbl, bgcolor=ud_bg2, text_size=ud_ts, tooltip="WHi is distance to the prior-week high. FRESH/RECENT refers to the 60m STRAT timing signal.")
+        table.cell(ud_tbl, 4, 4, ud_location, text_color=px_strat_fresh ? ud_green : px_strat_recent ? color.lime : ud_val, bgcolor=ud_bg2, text_size=ud_ts, tooltip="A small positive WHi means price is close to prior-week-high commitment. Negative means price has already moved above it. Use this as location context, not as a standalone trigger.")
+
+        table.cell(ud_tbl, 6, 4, "Risk / Chase", text_color=ud_lbl, bgcolor=ud_bg2, text_size=ud_ts, tooltip="Extension is measured in Daily ATRs from Daily EMA20. Trend Code: +2 = close > EMA20 > EMA50; +1 = close > EMA50; -1 = close < EMA50; -2 = close < EMA20 < EMA50; 0 = mixed.")
+        table.cell(ud_tbl, 7, 4, ud_risk, text_color=px_not_severe and px_trend_code >= 1 ? ud_green : ud_amber, bgcolor=ud_bg2, text_size=ud_ts, tooltip="Positive ATR extension means price is above Daily EMA20; very large positive values warn against chasing. Trend describes the Daily EMA20/EMA50 structure.")
+
+        // ── Horizontal divider before the decision strip ───────────────────────────────
+        table.cell(ud_tbl, 0, 5, "", bgcolor=ud_div, height=1, text_size=ud_ts)
+
+        // ── Decision strip ─────────────────────────────────────────────────────────────
+        table.cell(ud_tbl, 0, 6, "DECISION · " + ud_decision, text_color=ud_exec == "AVOID LONG" ? ud_red : ud_green_action ? ud_green : ud_val, bgcolor=ud_bg2, text_size=ud_ts, tooltip="One-line synthesis of sponsorship, Quality/Stage, Weekly In-Force, STRAT timing, and current execution state. Read this first, then verify the evidence rows and chart.")
+
+        // ── Horizontal divider between DECISION and NEXT ───────────────────────────────
+        table.cell(ud_tbl, 0, 7, "", bgcolor=ud_div, height=1, text_size=ud_ts)
+
+        // ── Next strip ─────────────────────────────────────────────────────────────────
+        table.cell(ud_tbl, 0, 8, "NEXT · " + ud_next, text_color=ud_exec == "AVOID LONG" ? ud_red : ud_amber, bgcolor=ud_bg, text_size=ud_ts, tooltip="Forward-looking decision-support prompt: the condition that most needs to occur next. It is not an automated trade instruction.")
+    else
+        table.clear(ud_tbl, 0, 0, 7, 8)
+
+// Compact legacy parity table retained only as an optional validation view.
+var table px_dash = table.new(get_table_pos(parity_dash_position), 2, 10, border_width=1)
+if barstate.islast
+    if show_avwap_dashboard
+        string px_status = px_gradeA_cont_authority ? "GRADE-A CONT ACTION" : px_inside1u_armed ? "INSIDE ARMED" : px_preset2 and px_strat_tier >= px_strat_tier_min_p4 ? "A+ + STRAT" : px_preset3 and px_strat_tier >= px_strat_tier_min_p4 ? "EARLY + STRAT" : px_preset4 ? "QUALITY + STRAT" : px_preset2 ? "A+ ALIGNMENT" : px_preset3 ? "EARLY QUALITY" : px_preset1 ? "QUALITY LONG" : px_long_stage >= 2 ? "DEVELOPING" : px_long_stage == 1 ? "EARLY WATCH" : "NO QUALITY EDGE"
+        color px_status_color = str.contains(px_status, "A+") or str.contains(px_status, "QUALITY + STRAT") ? #20c779 : str.contains(px_status, "EARLY") ? color.orange : px_preset1 ? #4caf50 : color.gray
+        string px_presets = "P1 " + (px_preset1 ? "✓" : "—") + "  P2 " + (px_preset2 ? "✓" : "—") + "  P3 " + (px_preset3 ? "✓" : "—") + "  P4 " + (px_preset4 ? "✓" : "—")
+        string px_quality_txt = str.tostring(px_quality, "#.0") + " · " + px_stage_name(px_long_stage)
+        string px_core_txt = "AV " + str.tostring(px_av_core_bull) + "/3 · CL " + str.tostring(px_classic_core_bull) + "/3"
+        string px_macro_txt = str.tostring(px_av_macro_bull) + "/2 Bull"
+        string px_wif_txt = px_wif_up ? "UP" : px_wif_dn ? "DOWN" : "WAIT"
+        string px_strat_txt = "T" + str.tostring(px_strat_tier) + " · " + (px_strat_playbook_id > 0 ? playbook_short(px_strat_playbook_id) + " · " : "") + px_signal_name(px_strat_signal_id) + (px_strat_combo_quality > 0 ? " · Grade " + combo_quality_letter(px_strat_combo_quality) : "") + (px_strat_fresh ? " · FRESH" : px_strat_recent ? " · RECENT" : "")
+        string px_rs_txt = (px_signed(px_rs_edge, "#.0") + "%") + " · RVOL " + (na(px_d_rvol) ? "N/A" : str.tostring(px_d_rvol, "#.00") + "x")
+        string px_risk_txt = (px_signed(px_extension_atr, "#.00") + " ATR") + " · Trend " + str.tostring(px_trend_code)
+
+        bool px_dark = table_theme == "Dark"
+        color px_bg = px_dark ? color.new(#131722, 0) : color.new(#ffffff, 0)
+        color px_bg2 = px_dark ? color.new(#161b2a, 0) : color.new(#f4f6f8, 0)
+        color px_label = px_dark ? color.silver : color.new(#333333, 0)
+        color px_value = px_dark ? color.white : color.new(#111111, 0)
+        string px_ts = get_size(parity_dash_size)
+
+        table.cell(px_dash, 0, 0, "TFC×AVWAP · 60m", text_color=color.white, bgcolor=color.new(#222222, 0), text_size=px_ts)
+        table.cell(px_dash, 1, 0, px_status, text_color=color.white, bgcolor=px_status_color, text_size=px_ts)
+        table.cell(px_dash, 0, 1, "Presets", text_color=px_label, bgcolor=px_bg, text_size=px_ts)
+        table.cell(px_dash, 1, 1, px_presets, text_color=px_value, bgcolor=px_bg, text_size=px_ts)
+        table.cell(px_dash, 0, 2, "Quality / Stage", text_color=px_label, bgcolor=px_bg2, text_size=px_ts)
+        table.cell(px_dash, 1, 2, px_quality_txt, text_color=px_quality >= px_quality_min ? #20c779 : color.orange, bgcolor=px_bg2, text_size=px_ts)
+        table.cell(px_dash, 0, 3, "Relationship", text_color=px_label, bgcolor=px_bg, text_size=px_ts)
+        table.cell(px_dash, 1, 3, px_relationship_name(px_relationship), text_color=px_relationship >= 2 ? #20c779 : px_relationship < 0 ? #e95454 : color.orange, bgcolor=px_bg, text_size=px_ts)
+        table.cell(px_dash, 0, 4, "Core D/W/M", text_color=px_label, bgcolor=px_bg2, text_size=px_ts)
+        table.cell(px_dash, 1, 4, px_core_txt, text_color=px_av_core_bull >= 2 and px_classic_core_bull >= 2 ? #20c779 : color.orange, bgcolor=px_bg2, text_size=px_ts)
+        table.cell(px_dash, 0, 5, "Macro Q/Y", text_color=px_label, bgcolor=px_bg, text_size=px_ts)
+        table.cell(px_dash, 1, 5, px_macro_txt, text_color=px_av_macro_bull >= 1 ? #20c779 : color.orange, bgcolor=px_bg, text_size=px_ts)
+        table.cell(px_dash, 0, 6, "Weekly IF / H", text_color=px_label, bgcolor=px_bg2, text_size=px_ts)
+        table.cell(px_dash, 1, 6, px_wif_txt + " · " + px_h_context_name(px_h_execution), text_color=px_wif_up ? #20c779 : px_wif_dn ? #e95454 : color.orange, bgcolor=px_bg2, text_size=px_ts)
+        table.cell(px_dash, 0, 7, "STRAT Timing", text_color=px_label, bgcolor=px_bg, text_size=px_ts)
+        table.cell(px_dash, 1, 7, px_strat_txt, text_color=px_strat_tier >= 3 ? #20c779 : px_strat_tier >= 2 ? color.lime : px_strat_tier == 1 ? color.orange : px_value, bgcolor=px_bg, text_size=px_ts)
+        table.cell(px_dash, 0, 8, "RS / RVOL", text_color=px_label, bgcolor=px_bg2, text_size=px_ts)
+        table.cell(px_dash, 1, 8, px_rs_txt, text_color=not na(px_rs_edge) and px_rs_edge > 0 ? #20c779 : color.orange, bgcolor=px_bg2, text_size=px_ts)
+        table.cell(px_dash, 0, 9, "Risk / Trend", text_color=px_label, bgcolor=px_bg, text_size=px_ts)
+        table.cell(px_dash, 1, 9, px_risk_txt, text_color=px_not_severe and px_trend_code >= 1 ? #20c779 : color.orange, bgcolor=px_bg, text_size=px_ts)
+    else
+        table.clear(px_dash, 0, 0, 1, 9)
+
+// Combined alert kept intentionally compact to protect the script's plot budget.
+// It fires only when a fresh named STRAT timing signal appears inside a Quality Long.
+bool px_quality_strat_fresh = px_preset1 and ((px_strat_tier >= px_strat_tier_min_p4 and px_strat_fresh) or px_gradeA_cont_authority)
+alertcondition(px_quality_strat_fresh, title="TFC×AVWAP + STRAT: Fresh Quality Timing", message="{{ticker}} — Quality TFC×AVWAP sponsorship + fresh STRAT execution timing (Tier 2–3 or qualified Grade-A/B Trend Relay continuation). Review dashboard.")
+
+
+
+// Plot hidden series for native TradingView Screener filtering
+plot(actionable_bullish_combo ? 1 : 0, title="Screen: Any Bullish Strat Combo", display=display.none)
+plot(actionable_bearish_combo ? 1 : 0, title="Screen: Any Bearish Strat Combo", display=display.none)
+
+// --- 5. TRADINGVIEW ALERT CONDITIONS ---
+// Individual Actionable Signal Alerts
+// Individual alertconditions were intentionally consolidated to stay below TradingView's
+// 64 plot-count limit. All individual signals remain available as Screener plots above.
+// Use these two master bar alerts, plus the combined-grade and combo alerts below.
+alertcondition(any_bullish_bar_signal, title="Actionable: ANY Bullish Bar Signal", message="{{ticker}} {{interval}} - Bullish actionable bar signal. Check Actionable Signal ID.")
+alertcondition(any_bearish_bar_signal, title="Actionable: ANY Bearish Bar Signal", message="{{ticker}} {{interval}} - Bearish actionable bar signal. Check Actionable Signal ID.")
+
+alertcondition(actionable_bullish_combo, title="🚨 Strat: ANY Bullish Actionable Combo", message="{{ticker}} {{interval}} - Bullish STRAT combo passed selected quality mode.")
+alertcondition(actionable_bearish_combo, title="🚨 Strat: ANY Bearish Actionable Combo", message="{{ticker}} {{interval}} - Bearish STRAT combo passed selected quality mode.")
+alertcondition(screen_playbook_id != 0, title="🎯 STRAT Playbook: RT / IR / RevStrat", message="{{ticker}} {{interval}} - High-priority STRAT playbook trigger passed selected quality mode. Check Playbook ID.")
+
+// --- 6. DYNAMIC WEBHOOK / AUTOMATED ALERT TRIGGER ---
+// Triggers an instant dynamic notification containing the exact pattern name
+if actionable_bullish_combo
+    string pb_bull_txt = screen_playbook_id > 0 ? playbook_name(screen_playbook_id) + " · " : ""
+    alert("STRAT BULLISH: " + syminfo.ticker + " (" + timeframe.period + ") " + pb_bull_txt + combo_name + " · Grade " + screen_combo_grade_txt + " · " + combo_quality_mode, alert.freq_once_per_bar_close)
+if chart_failed_bull_breakout and barstate.isconfirmed
+    alert("STRAT EXIT / PROTECT: " + syminfo.ticker + " (" + timeframe.period + ") qualified bullish breakout failed into bearish 2D.", alert.freq_once_per_bar_close)
+
+if actionable_bearish_combo
+    int pb_bear_id = screen_playbook_id < 0 ? -screen_playbook_id : 0
+    string pb_bear_txt = pb_bear_id > 0 ? playbook_name(pb_bear_id) + " · " : ""
+    alert("STRAT BEARISH: " + syminfo.ticker + " (" + timeframe.period + ") " + pb_bear_txt + combo_name + " · Grade " + screen_combo_grade_txt + " · " + combo_quality_mode, alert.freq_once_per_bar_close)
