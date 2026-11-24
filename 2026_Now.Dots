@@ -1,0 +1,622 @@
+//@version=6
+indicator(title="NOW.DOTS",overlay=false)
+
+// Inputs
+longLength       = input.int(10, "Long Length", minval=1)
+shortLength      = input.int(3, "Short Length", minval=1)
+signalLength     = input.int(8,  "Signal Length", minval=1)
+bbLength         = input.int(15, "BB Length",    minval=1)
+bbMult           = input.float(2.0, "BB Mult",    minval=0.001, maxval=50)
+stochLength      = input.int(10, "Period",       minval=1)
+KPeriod          = input.int(4,  "%K Period",    minval=1)
+periodK          = input.int(10, "%K Length",    minval=1)
+smoothK          = input.int(4,  "%K Smoothing", minval=1)
+oversold         = input.int(20, "OS Threshold", minval=20, maxval=80)
+periodD          = input.int(3,  "%D Smoothing", minval=1)
+lookback         = input.int(30, "Lookback Period", minval=1)
+atr_len          = input.int(14, "ATR Length",   minval=1)
+lensig          = input.int(5, title="ADX Smoothing", minval=1, maxval=50, group = "Indicator Settings")
+adx_ema_len     = input.int(5, title="ADX Slope Signal", minval=1, maxval=50, group = "Indicator Settings")
+len             = input.int(7, minval=1, title="DI Length", group = "Indicator Settings")
+length          = input.int(6, "TTM Squeeze Length")
+
+//EMA Squeee 
+group_ma = 'Moving-Average Settings'
+fastLen = input.int(5, 'Fast EMA', group = group_ma)
+slowLen = input.int(15, 'Slow EMA', group = group_ma)
+group_sq = 'Squeeze Logic'
+atrLen = input.int(20, 'ATR Length', group = group_sq)
+sqThresh = input.float(0.45, 'Squeeze ≤ (ATR mult)', step = 0.05, group = group_sq)
+// Input groups
+var g_ma = "Moving Averages"
+var g_vis = "Visualization"
+// Visualization
+show_emas = input.bool(true, "Show EMAs", group=g_vis)
+// EMA periods - customizable based on VTG methodology
+len1 = input.int(5, "Fast EMA", minval=1, group=g_ma)
+len2 = input.int(9, "Medium Fast EMA", minval=1, group=g_ma)
+len3 = input.int(21, "Medium EMA", minval=1, group=g_ma)
+len4 = input.int(34, "Medium Slow EMA", minval=1, group=g_ma)
+len5 = input.int(55, "Slow EMA", minval=1, group=g_ma)
+src = input.source(close, "Source", group=g_ma)
+
+// Calculate EMAs
+ema1 = ta.ema(src, len1)
+ema2 = ta.ema(src, len2)
+ema3 = ta.ema(src, len3)
+ema4 = ta.ema(src, len4)
+ema5 = ta.ema(src, len5)
+
+lengthregression = input.int(defval=90, title="Linear Regression Length", minval=1, tooltip="Number of periods for linear regression calculation")
+lrc = ta.linreg(close, lengthregression, 0)
+lengthregression2 = input.int(defval=30, title="Linear Regression Length", minval=1, tooltip="Number of periods for linear regression calculation")
+lrc2 = ta.linreg(close, lengthregression2, 0)
+barcolor(close > lrc? color.green : close > lrc2? color.white : color.red)
+plot(  lrc , title="Linear Regression 90",  color=color.white, linewidth=2, force_overlay = true)
+plot(  lrc2 , title="Linear Regression 30",  color=color.rgb(152, 174, 255), linewidth=2, force_overlay = true)
+
+//––––––––––––––––––––––––– 2. CORE CALCULATIONS
+emaFast = ta.ema(close, fastLen)
+emaSlow = ta.ema(close, slowLen)
+
+spread = emaFast - emaSlow // sign ⇒ trend bias
+atr = ta.atr(atrLen)
+spreadATR = nz(spread / atr) // normalised distance
+
+//––––––––––––––––––––––––– 3. STATE ENGINE
+squeeze = math.abs(spreadATR) <= sqThresh
+posMom = spreadATR > 0 // bullish side
+incMom = math.abs(spreadATR) > math.abs(spreadATR[1]) // gaining force
+
+//––––––––––––––––––––––––– 5. BUY TRIGGER
+buyFire = not squeeze and squeeze[1] // just left a squeeze
+buyCond = (buyFire and spreadATR > 0 and close > close[1]) // into bullish expansion ta.crossover(close, lrc) or
+plotshape(buyCond, "EMA Squeeze BUY", shape.arrowup, location.belowbar, color=color.new(color.green, 0), size=size.small, force_overlay=true)
+
+
+alertcondition(buyCond, title = 'EMA Squeeze BUY', message = 'EMA Squeeze fired BUY on {{ticker}} @ {{close}}')
+bgcolor(buyCond ? color.new(color.green, 80) : na,title = "'EMA Squeeze BUY", force_overlay = true)
+bgcolor(buyCond ? color.new(color.green, 80) : na,title = "'EMA Squeeze BUY")
+
+// ──────────────────────────── NEW SELL TRIGGER  ←––––––––––––––––––––––––––––
+sellFire = not squeeze and squeeze[1]                // identical “fire” event
+sellCond =ta.crossunder(close, lrc) or (sellFire and spreadATR < 0 and close < close[1])  // bearish expansion
+
+
+ 
+
+
+
+// 1. Green Dot (custom slow-stoch crossover)
+lowest_k         = ta.lowest(low, KPeriod)
+fastK            = (ta.highest(high, KPeriod) - lowest_k) != 0 ? (close - lowest_k) / (ta.highest(high, KPeriod) - lowest_k) * 100 : 0
+stoc_slow        = ta.sma(fastK, stochLength)
+isGreenDot       = (stoc_slow[1] / ta.sma(stoc_slow[1], 4) < 1) and (stoc_slow[1] < 60) and (stoc_slow / ta.sma(stoc_slow, 4) > 1)
+//plotshape(isGreenDot, "Green Dot", shape.circle, location.abovebar, color=color.new(color.green, 0), size=size.tiny)
+
+// 2. Blue Dot (fast stoch crossing above oversold)
+k_fast           = ta.sma(ta.stoch(close, high, low, periodK), smoothK)
+d_slow           = ta.sma(k_fast, periodD)
+isBlueDot        = (k_fast > oversold) and (k_fast[1] < oversold)
+plotshape(isBlueDot and close > lrc, "Blue Dot", shape.arrowup, location.belowbar, color=color.new(color.blue, 0), size=size.tiny, force_overlay=true)
+alertcondition(isBlueDot, title = 'Blue Dot BUY')
+
+// 3. Green Dot (fast stoch > slow stoch in oversold)
+greendot        = (k_fast[1] < d_slow[1]) and (k_fast[1] < oversold) and (ta.crossover(k_fast, d_slow)) and (k_fast / d_slow > 1) and (d_slow > d_slow[1])
+//plotshape(greendot, "Blue Dot (2)", shape.circle, location.belowbar, color=#02fff6, size=size.tiny)
+k = ta.sma(ta.stoch(close, high, low, periodK), smoothK)
+kblack = ta.sma(ta.stoch(close, high, low, 10), 1)
+d = ta.sma(k, periodD)
+greendot2 = k[1] < d[1] and k[1] < oversold and k[0] > d[0] and k / d > 1 and d > d[1] ? 1 : 0
+greendottrue = bool(greendot2) and ta.crossover(k, d)
+//plotshape(greendottrue or ta.crossover(k, d) and close > open and close > close[1] ? 1 : na, 'Green Dot - Stoch', color = color.green, style = shape.circle, location = location.belowbar, size = size.small)
+// 4. Purple Dot (EMA conditions)
+ema2_8_ratio    = ta.ema(close, 2) / ta.ema(close, 8)
+ema3_5_ratio    = ta.ema(close, 3) / ta.ema(close, 5)
+ema4_8_ratio    = ta.ema(close, 4) / ta.ema(close, 8)
+ema5_30_ratio   = ta.ema(close, 5) / ta.ema(close, 30)
+Pout            = (ema2_8_ratio > 1) and (ema3_5_ratio < 1.5) and (ema4_8_ratio > 0.7) and (ema5_30_ratio > 0.95) and (close > close[1]) and (close > close[2]) and (close > close[3])
+//plotshape(Pout, "Purple Dot: EMAs align bullishly.", shape.circle, location.bottom, color=color.new(color.purple, 0), size=size.small)
+
+// 5. Orange Dot (MACD histogram rising + volume surge)
+[macdLine, signalLine, macdHist]     = ta.macd(close, 12, 26, 9)
+[_, _, macdHist1]                    = ta.macd(close[1], 12, 26, 9)
+volSurge                             = volume > (0.9 * ta.sma(volume, 50))
+Mout                                 = (macdHist - macdHist1 > 0) and volSurge
+//plotshape(Mout, "Orange Dot", shape.circle, location.bottom, color=color.new(color.orange, 0), size=size.tiny)
+muldots = (Mout and Pout and isBlueDot and close > open and close > close[1]) //and  greendottrue //greendot //or
+bgcolor(muldots ? color.new(color.yellow, 70) : na,title ="muldots", force_overlay=true)
+bgcolor(muldots ? color.new(color.yellow, 70) : na,title ="muldots")
+
+// 6. Bollinger Band Bottom
+basis        = ta.sma(close, bbLength)
+dev          = bbMult * ta.stdev(close, bbLength)
+upper        = basis + dev
+lower        = basis - dev
+plot(basis, color=color.gray, force_overlay=true)
+plot(upper, color=color.gray, force_overlay=true)
+plot(lower, color=color.gray, force_overlay=true)
+Bout         = ((low[1] < lower[1] or low < lower) and (close > lower) and (stoc_slow[1] < 60) and (close > close[1]))
+//plotshape(Bout, "White Dot", shape.circle, location.belowbar, color=color.new(color.white, 0), size=size.auto)
+
+// 7. Black Dot (oversold & lower BB touch)
+k_black      = ta.sma(ta.stoch(close, high, low, stochLength), 1)
+blackdot     = ((k_black <= 25 or k_black[1] <= 25) and (low < lower) and (close > open))
+//plotshape(blackdot, "Black Dot", shape.circle, location.belowbar, color=color.new(color.black, 0), size=size.small)
+
+// 8. BB + Green Dot Touch
+BBtouch      = (((high > lower) and (low < lower)) or ((high[1] > lower[1]) and (low[1] < lower[1]))) and (close > open)
+GrayDotBB   = (greendot or isGreenDot) and BBtouch
+//plotshape(GreenDotBB, "BB Touch + Green Dot", shape.circle, location.belowbar, color=color.new(color.green, 0), size=size.normal)
+
+// 9. Ergodic TSI
+//The Ergodic TSI is William Blau's enhancement of the standard TSI. It provides:
+//Momentum Analysis: Shows the strength and direction of price momentum
+//Trend Identification: Helps identify trend changes and continuations
+//Signal Generation: Creates buy/sell signals through crossovers
+tsi_val      = ta.tsi(close, longLength, shortLength)
+ergodic      = tsi_val - ta.sma(tsi_val, signalLength)
+//plotshape(ergodic >= 0, "Erg+ Dot", shape.circle, location.top, color=color.new(color.green, 0), size=size.tiny)
+//plotshape(ergodic <  0, "Erg− Dot", shape.circle, location.top, color=color.new(color.red,   0), size=size.tiny)
+//Early entry
+EarlyBuy = isBlueDot and blackdot and close > lrc
+plotshape(EarlyBuy, "Early Buy: Blue + Black Dots", shape.arrowup, location.belowbar, color=color.new(color.lime, 0), size=size.small, force_overlay=true)
+bgcolor(EarlyBuy ? color.new(color.lime, 80) : na,title ="Early Buy: Blue + Black Dots", force_overlay=true)
+bgcolor(EarlyBuy ? color.new(color.lime, 80) : na,title ="Early Buy: Blue + Black Dots")
+
+// 10. PGO Arrow (MA + MACD + Stoch)
+PGO          = (Pout and Mout) and (greendot or isGreenDot)
+plotshape(PGO, "MA + MACD + Stoc", shape.arrowup, location.belowbar, color=color.new(color.yellow, 0), size=size.small, force_overlay=true)
+bgcolor(PGO ? color.new(color.aqua, 70) : na,title ="PGO", force_overlay=true)
+bgcolor(PGO ? color.new(color.aqua, 70) : na,title ="PGO")
+
+// 11. BBB Highlight (BB + MACD + Stoch)
+BBB          = ((Bout and Mout) and (greendot or isGreenDot) and GrayDotBB) and close > lrc 
+plotshape(BBB, "BB + MACD + Stoch", shape.arrowup, location.belowbar, color=color.new(color.blue, 0), size=size.small, force_overlay=true)
+bgcolor(BBB ? color.new(color.blue, 80) : na, title = "Green-Dot happened at the Bollinger-Band touch with MACD histogram is rising on strong volume.", force_overlay=true)// The price has just bounced off the lower Bollinger Band. The MACD histogram is rising on strong volume. You have a valid Green-Dot stochastic signal.And that Green-Dot happened exactly at the Bollinger-Band touch.")
+bgcolor(BBB ? color.new(color.blue, 80) : na, title = "Green-Dot happened at the Bollinger-Band touch with MACD histogram is rising on strong volume.")
+// 12. ROC New High / Low
+ROC2         = close - close[2]
+isNewHigh    = ROC2 > ta.highest(ROC2[1], lookback)
+isNewLow     = ROC2 < ta.lowest(ROC2[1], lookback)
+//plotshape(isNewHigh,       "ROC New High",  shape.circle, location.abovebar, color=#9bd2ff, size=size.tiny)
+//plotshape(isNewLow,        "ROC New Low",   shape.circle, location.belowbar, color=color.new(color.fuchsia, 0), size=size.tiny)
+alertcondition(isNewHigh, title = 'ROC New High')
+
+// 13. ROCLong Arrow
+ROCLong      = (Mout and (greendot or isGreenDot) and isNewHigh) and close > lrc 
+plotshape(ROCLong, "ROCLong Arrow", shape.arrowup, location.belowbar, color=color.new(color.blue, 0), size=size.normal, force_overlay=true)
+bgcolor(ROCLong ? color.new(color.green, 80) : na, title = "New High ROC", force_overlay=true)
+
+// 14. ATR Multiple from 50 SMA (unused threshold)
+atr_pct      = ta.atr(atr_len) / close * 100
+sma50        = ta.sma(close, 50)
+pct_from_sma = (close - sma50) / sma50 * 100
+atr_mult     = pct_from_sma / atr_pct
+
+//15. ADX
+
+up = ta.change(high)
+down = -ta.change(low)
+plusDM = na(up) ? na : (up > down and up > 0 ? up : 0)
+minusDM = na(down) ? na : (down > up and down > 0 ? down : 0)
+trur = ta.rma(ta.tr, len)
+plus = fixnan(100 * ta.rma(plusDM, len) / trur)
+minus = fixnan(100 * ta.rma(minusDM, len) / trur)
+sum = plus + minus
+adx = 100 * ta.rma(math.abs(plus - minus) / (sum == 0 ? 1 : sum), lensig)
+adx_ema = ta.ema(adx,adx_ema_len)
+
+//bgcolor(adx > adx_ema? plus > minus? color.new(color.green, 95) : color.new(color.green, 95) : na, title = "ADX", force_overlay=true)
+//bgcolor(adx < adx_ema? plus < minus? color.new(color.red, 95) : color.new(color.red, 95) : na, title = "ADX", force_overlay=true)
+
+//
+//MOMENTUM OSCILLATOR
+mom = ta.linreg(close - math.avg(math.avg(ta.highest(high, length), ta.lowest(low, length)), ta.sma(close, length)), length, 0)
+//Raschke's 3/10 MACD 
+fastLength = input.int(3, minval=1)
+slowLength = input.int(10, minval=2)
+MALength = input.int(16, minval=1)
+fastsma = ta.sma(close, fastLength)
+slowsma = ta.sma(close, slowLength)
+diff = fastsma - slowsma
+momon = ta.crossover(mom , 0) or ta.crossover(mom , ta.sma(diff, MALength))
+// Current bar statuses
+// Current bar statuses as booleans
+bools = array.from(isGreenDot, greendot, isBlueDot, Pout, Mout, Bout, blackdot, GrayDotBB, ergodic >= 0, ergodic < 0, PGO, BBB, isNewHigh, isNewLow)
+// Corresponding dot colors
+cols = array.from( color.green, #02fff6, color.blue, color.purple, color.orange,   color.white, color.black, color.black, color.green, color.red,  color.yellow, #0004ff, #9bd2ff, color.fuchsia)
+// Tooltip descriptions
+descs = array.from(  "Stochastic: Bullish reversals from extended weakness.  High probability reversal points—useful for entering long positions after a meaningful pullback or base formation.",  "Stochastic crossovers: High-probability bullish reversal signal. Selling pressure has exhausted and buying interest is emerging",  "Fast %K > oversold threshold", "EMA ratios bullish", "MACD hist rising + high volume", "Lower BB bounce", "Oversold stoch + below lower BB", "Green Dot at BB bounce", "TSI above signal", "TSI below signal", "EMA+MACD+Stoch confluence", "BB+MACD+Stoch confluence", "Rate of Change New High: strong upward momentum—potential breakout or acceleration in buyers’ interest.","Rate of Change New Low: Indicates exceptionally rapid selling pressure—possible capitulation or breakdown.")
+
+// Create table
+//var tbl = table.new(position.top_right, 3, array.size(bools) + 1, border_width=1, force_overlay=true)
+
+// Header row
+//if barstate.isfirst
+    //table.cell(tbl, 0, 0, "Dot",        text_color=color.white, bgcolor=color.gray,text_size=size.large)
+    //table.cell(tbl, 1, 0, "Status",     text_color=color.white, bgcolor=color.gray,text_size=size.large)
+    //table.cell(tbl, 2, 0, "Description",text_color=color.white, bgcolor=color.gray)
+
+// Populate rows
+//for i = 0 to array.size(bools) - 1
+    //dotActive = array.get(bools, i)
+    //dotColor  = array.get(cols,  i)
+    //dotDesc   = array.get(descs, i)
+    // Dot type circle
+    //table.cell(tbl, 0, i + 1, text="●", text_color=dotColor, tooltip=dotDesc,text_size=size.large)
+    // Status circle: green if true, red if false
+    //statusText  = dotActive ? "Yes" : "No"
+    //statusColor = dotActive ? color.green : color.red
+    //table.cell(tbl, 1, i + 1, text=statusText, text_color=statusColor, tooltip=dotDesc,text_size=size.large)
+    // Description text
+    //table.cell(tbl, 2, i + 1, dotDesc)
+
+
+// Alerts
+alertcondition(PGO, title="PGO Signal", message="PGO conditions met")
+
+
+lineTicker  = input('SP:SPX', title='Comparative Symbol for Line', group = '----------RS Rating----------', tooltip = 'Reference ticker used for calculation of the RS Line.')
+SpxValue    = input(4200, title='Value of Comparative Symbol', group = '----------RS Rating----------', tooltip = 'Used to gather a constant value')
+offset      = input.int(80, minval = 0, maxval = 300, title='Offset (%)', group = '----------RS Rating----------', tooltip = 'Used to display the RS Line under the price.')
+plotNewHigh = input(true, title = 'Plot RS New Highs', group = '----------RS Rating----------')
+blueDotCol  = input(color.rgb(121, 213, 242,62), title = 'Color of Dots', group = '----------RS Rating----------')
+rsNewHigh   = input.string('Historical RS New Highs', title = 'Type', options=['RS New Highs','RS New Highs Before Price', 'Historical RS New Highs', 'Historical RS New Highs  Before Price'], group = '----------RS Rating----------')
+lookback2   = input.int(250, title = 'Look-back', minval = 1, maxval = 252, group = '----------RS Rating----------', tooltip = 'The lookback for calculation of price and RS New Lows.')
+
+
+// Comparative Ticker for RS Line
+comparativeSymbol   = request.security(lineTicker, timeframe.period, close)
+// RS Line but multiplied by a little bit less than the constant value of the comparative ticker for correct display
+rsCurve             = (close/comparativeSymbol)
+// Adapt Ratio for Sectors and Indices
+if (syminfo.industry == 'Investment Trusts/Mutual Funds')
+    offset := 90
+// We use a wider offset for Weekly timeframe for a smoother display
+rsRatio             = timeframe.isweekly ? SpxValue*(offset-10)/100:SpxValue*offset/100
+rs                  = rsCurve*rsRatio
+prevlookback  = lookback
+prevlookback2 = lookback2 // For RS New Lows
+lookback := math.min(lookback - 1, bar_index)
+//rsPlot = plot(hideRSLine ? na:rs, title='RS Line', style=plot.style_line, linewidth=1, color=colorRS)
+
+// Historical New Highs & New Highs Before Price
+var label newHigh = na
+histNH = ta.highest(rs  , prevlookback)
+histCl = ta.highest(high, prevlookback)
+// Historical RS New High
+plot((rsNewHigh == 'Historical RS New Highs' and plotNewHigh and rs == histNH) ? 12 : na, "Historical RS New Highs", color=color.new(color.blue, 70), style=plot.style_circles, linewidth=8)
+plot((rsNewHigh == 'Historical RS New Highs Before Price' and plotNewHigh and rs == histNH and high < histCl)? 12 : na, "Historical RS New Highs Before Price", color=color.blue, style=plot.style_circles, linewidth=6)
+plot((barstate.islast and rsNewHigh == 'RS New Highs' and plotNewHigh and rs == histNH)? 12 : na, " RS New High", color=color.blue, style=plot.style_circles, linewidth=6)
+plot((barstate.islast and rsNewHigh == 'RS New Highs Before Price' and plotNewHigh and rs == histNH and high < histCl)? 12 : na, " RS New High Before Price", color=color.blue, style=plot.style_circles, linewidth=6)
+
+
+//plot((rsNewLow == 'Historical RS New Lows' and plotNewLow and rs == histNL)? 12 : na, "RS New High", color=color.blue, style=plot.style_circles, linewidth=6)
+
+// Inputs
+lengthBB = input.int(10, "Bollinger Bands Length")
+multBB   = input.float(2.0, "Bollinger Bands StdDev")
+lengthKC = input.int(10, "Keltner Channels Length")
+multKC   = input.float(1.5, "Keltner Channels ATR Multiplier")
+lengthEMA = input.int(21, "Trend EMA Length")
+// Price and ATR
+price = close
+atr2   = ta.atr(lengthKC)
+// Bollinger Bands
+basis2    = ta.sma(price, lengthBB)
+dev2      = multBB * ta.stdev(price, lengthBB)
+upperBB  = basis2 + dev2
+lowerBB  = basis2 - dev2
+//plot(basis2, title = 'Basis', color = color.rgb(0, 140, 255, 30), force_overlay = true)
+//plot(upperBB, title = 'upperBB', color = #2195f334, force_overlay = true)
+//plot(lowerBB, title = 'lowerBB', color = #2195f334, force_overlay = true)
+
+// Keltner Channels
+maKC     = ta.ema(price, lengthKC)
+upperKC  = maKC + multKC * atr2
+lowerKC  = maKC - multKC * atr2
+//plot(maKC, title = 'Basis', color = color.rgb(242, 255, 0, 30), force_overlay = true)
+//plot(upperKC, title = 'upperKC', color = color.rgb(242, 255, 0, 80), force_overlay = true)
+//plot(lowerKC, title = 'lowerKC', color = color.rgb(242, 255, 0, 80), force_overlay = true)
+// Momentum (TTM histogram)
+momentum      = ta.linreg(price - price[1], lengthBB, 0)
+// Squeeze condition: BB inside KC
+squeezeActive = (upperBB < upperKC) and (lowerBB > lowerKC)
+
+// Squeeze firing: transition from active to inactive
+squeezeFired  = not squeezeActive and squeezeActive[1]
+// Buy signal: first green dot (squeeze fired) + bullish momentum
+
+// Trend EMA
+emaTrend = ta.ema(price, lengthEMA)
+// Define "ideal buy zone": price above trend EMA and near BB basis
+inBuyZone     = (price > emaTrend) and (price >= basis * 0.9) and (price <= basis * 1.1)
+
+buySignal     = squeezeFired and (momentum > 0) and momentum > momentum[1] //and inBuyZone
+
+// Lookback period for New High detection
+lookback_period = input.int(65, title="Lookback Period (Bars)", minval=20, maxval=252, 
+                           tooltip="Default is 65 bars (~3 months on daily chart). Use 130 for 6 months, 252 for 12 months")
+
+// Volume ratio color thresholds
+buying_threshold = input.float(1.0, title="Buying Pressure Threshold", minval=0.1, step=0.1,tooltip="Up/Down Volume Ratio threshold for buying pressure")
+strong_buying = input.float(1.5, title="Strong Buying Threshold", minval=0.1, step=0.1, tooltip="Up/Down Volume Ratio threshold for strong buying pressure")
+very_strong_buying = input.float(2.0, title="Very Strong Buying Threshold", minval=0.1, step=0.1, tooltip="Up/Down Volume Ratio threshold for very strong buying pressure")
+
+// Visual settings
+show_nh_dots = input.bool(true, title="Show New High (NH) Dots")
+show_nhbp_dots = input.bool(true, title="Show New High Before Price (NHBP) Dots")
+
+//==============================================================================
+// OBV Calculation
+//==============================================================================
+
+// Calculate OBV using the built-in function
+obv = ta.obv
+
+//==============================================================================
+// Up/Down Volume Ratio Calculation
+//==============================================================================
+
+// Calculate up and down volume over lookback period
+upVolume = math.sum(close > close[1] ? volume : 0, lookback_period)
+downVolume = math.sum(close < close[34] ? volume : 0, lookback_period)
+
+// Calculate Up/Down Volume Ratio (avoid division by zero)
+udRatio = downVolume > 0 ? upVolume / downVolume : upVolume > 0 ? 999 : 1
+
+//==============================================================================
+// OBV Color Based on Volume Ratio
+//==============================================================================
+
+// Define color based on Up/Down Volume Ratio
+obvColor = udRatio >= very_strong_buying ? color.lime :     // Very strong buying (green)
+           udRatio >= strong_buying ? color.aqua :          // Strong buying (cyan)
+           udRatio >= buying_threshold ? color.blue :       // Buying pressure (blue)
+           color.red                                        // Selling pressure (red)
+
+//==============================================================================
+// New High Detection for OBV
+//==============================================================================
+
+// Check if current OBV is a new high over the lookback period
+obvNewHigh = obv >= ta.highest(obv, lookback_period)
+
+// Check if current price is NOT making a new high (NHBP condition)
+priceNewHigh = high >= ta.highest(high, lookback_period)
+obvNHBP = obvNewHigh and not priceNewHigh
+
+//==============================================================================
+// Plotting
+//==============================================================================
+
+// Plot OBV line with dynamic color
+//plot(obv, title="OBV", color=obvColor, linewidth=2)
+
+// Plot New High dots (Green)
+plot(show_nh_dots and obvNewHigh and priceNewHigh ? 14 : na, title="NH (New High)", style=plot.style_circles, color=#00bcd4, linewidth=4)
+
+// Plot New High Before Price dots (Orange/Yellow)
+plot(show_nhbp_dots and obvNHBP ? 14 : na, title="NHBP (New High Before Price)", style=plot.style_circles, color=#9c27b0, linewidth=4)
+// PLOT MATRIX STYLE DOTS IN SEPARATE ROWS
+// Each row represents a different indicator, creating a matrix like SATA
+plot(buySignal ? 13 : na, "TTM Squeeze Buy", color=color.white, style=plot.style_circles, linewidth=6)
+plotshape(buySignal, "TTM Squeeze BUY", shape.arrowup, location.belowbar, color=color.new(color.white, 0), size=size.small, force_overlay=true)
+
+//Row 11 (top): EMA Squeeze
+plot(buyCond ? 11 : na, "EMA Squeeze Buy", color=color.lime, style=plot.style_circles, linewidth=6)
+//plot(sellCond ? 6 : na, "EMA Squeeze Sell", color=color.teal, style=plot.style_circles, linewidth=4)
+
+//ROC New High/Low
+plot(isNewHigh ? 10 : na, "ROC High", color=color.yellow, style=plot.style_circles, linewidth=4)
+plot(isNewLow ? 10 : na, "ROC Low", color=color.gray, style=plot.style_circles, linewidth=4)
+
+// Row 9: Orange Dot (MACD)  
+//The Orange Dot marks moments when the MACD histogram is rising—indicating growing bullish momentum—and is accompanied by above-average trading volume. 
+//In other words, it flags when the market’s momentum is accelerating and more participants are stepping in, which often precedes short-term price advances.
+plot(Mout ?  9: na, "Momentum: MACD histogram is rising. Bbullish momentum. Accompanied by above-average volume.", color=#ff5900, style=plot.style_circles, linewidth=4)
+// Row 8: Aqua Dot (MACD)
+plot(momon ? 8  : na, "Momentum: a fresh shift to positive momentum with confirming strength relative to the MACD trend.", color=color.aqua, style=plot.style_circles, linewidth=4)
+// Row 8: Green Dot (Stochastic)  
+//a “momentum revival” alert: it watches for the moment when yesterday’s momentum was weak and oversold, yet today’s momentum shows a clear uptick—signaling a likely bounce.
+plot(greendot or (greendottrue or ta.crossover(k, d) and close > open and close > close[1]) ?  3: na, "Momentum: Stochastic - yesterday’s momentum was weak and oversold, yet today’s momentum shows a clear uptick—signaling a likely bounce.", color=color.green, style=plot.style_circles, linewidth=4)
+
+
+// Row 10: Green Dot (Stochastic) - Top Row
+//The Green Dot is a sophisticated momentum signal that identifies early reversal opportunities from oversold conditions. It's like having a radar that detects when selling pressure is exhausted and buying momentum is just beginning to emerge.
+//Think of it as a "momentum shift detector" - it watches for situations where:
+//-The market was recently weak (stochastic below 60)
+//-Selling pressure just peaked and is now declining
+//-Fresh buying momentum is starting to build
+//-The timing is right for a potential bounce
+//This creates a high-probability setup where you're buying just as the tide turns from bearish to bullish momentum.
+plot(isGreenDot ? 2 : na, "Momentum: Stochastic - identifies early reversal opportunities from oversold conditions.", color=color.green, style=plot.style_circles, linewidth=4)
+
+// Row 9: Blue Dot  
+//The Blue Dot system represents a sophisticated multi-layered stochastic analysis that combines traditional crossover signals with momentum validation and early breakout detection. Think of it as having three different radar systems working together to catch the best possible entry points.
+//The system creates two distinct signals:
+//-Blue Dot: A simple but effective "momentum awakening" signal when stochastic crosses above 25
+//-Green Dot True: A comprehensive "perfect storm" signal requiring five conditions to align simultaneously
+plot(isBlueDot ? 4 : na, "Momentum: Early opportunities (Blue Dot) and high-confidence setups(Green Dot)", color=color.blue, style=plot.style_circles, linewidth=6)
+
+
+
+
+//Purple Dot (Moving Averages)
+//The Purple Dot signal is a sophisticated momentum filter that identifies high-quality buying opportunities when multiple timeframes of exponential moving averages (EMAs) align in a specific pattern, combined with strong recent price action.
+//Think of it as a "momentum sandwich" - it looks for situations where:
+//-Very short-term momentum is strong (2-day EMA above 8-day EMA)
+//-Medium-term momentum isn't overheated (3-day vs 5-day ratio controlled)
+//-The overall trend structure is healthy (4-day vs 8-day shows strength)
+//-Long-term positioning is favorable (5-day vs 30-day shows upward bias)
+//-Recent price action confirms the momentum (3 consecutive higher closes)
+plot(Pout ? 5  : na, "Momentum: EMAs aligned with strong recent price action", color=#f700fb, style=plot.style_circles, linewidth=4)
+
+
+
+
+// Row 5: White Dot (Bollinger Band)
+//The White Dot is a volatility-based bounce signal that identifies potential reversal points when price dips below the lower Bollinger Band and then quickly recovers. 
+//Think of it as a spring-loaded coil—when price stretches too far down, it often snaps back, and the White Dot marks that snap-back moment when there's both volatility expansion and a hint of buying pressure.
+//plot(Bout ? 9 : na, "Reversal: Price dips below the lower Bollinger Band and then quickly recovers.", color=color.white, style=plot.style_circles, linewidth=4)
+
+// Row 4: Black Dot (oversold & lower BB touch)
+//The Black Dot is a quick oversold bounce indicator that marks bars where price dips below the lower Bollinger Band but then closes higher than it opened, provided the market was in a brief oversold state. 
+//Think of it as a “flash bounce” marker—when price momentarily stretches too far down, it often snaps back within the same bar, and the Black Dot flags that swift recovery.
+plot(blackdot ? 6 : na, "Mean Reversion: bounce from an oversold condition.", color=color.black, style=plot.style_circles, linewidth=4)
+
+// Row 3: Gray Dot (BB Touch + Green Dot)
+//Volatility Overshoot: Bollinger Band touches signal extremes where price often reverts.
+//Immediate Recovery: A bullish close after the touch confirms buying interest.
+//Momentum Backing: Requiring a Green Dot ensures you only take band-touch bounces when momentum conditions are favorable, significantly reducing false reversals.
+plot(GrayDotBB ?  7: na, "Mean reversion: high-probability reversal opportunities where volatility expansion and momentum shift align perfectly. ", color=color.gray, style=plot.style_circles, linewidth=4)
+
+// Row 2: Ergodic Positive (Green when positive)
+//plot(ergodic >= 0 ? 2 : na, "Ergodic +", color=color.green, style=plot.style_circles, linewidth=6)
+
+adxpos = adx > adx_ema and  plus > minus
+adxneg = adx < adx_ema and  plus < minus
+
+plot(adxpos ? 1 : na, "Positive ADX", color=color.new(color.green, 80), style=plot.style_circles, linewidth=4)
+plot(adxneg ? 1 : na, "Negative ADX", color=color.new(color.red, 80), style=plot.style_circles, linewidth=4)
+
+// Row 0 (Bottom): Ergodic  
+plot(ergodic >= 0 ? 0 : na, "Bullish momentum ", color=color.teal, style=plot.style_circles, linewidth=4)
+plot(ergodic < 0 ? 0 : na, "Bearish  momentum ", color=color.maroon, style=plot.style_circles, linewidth=4)
+
+
+greenDotComplex = greendot or (greendottrue or ta.crossover(k, d) and close > open and close > close[1])
+// ==============================================================================
+// VISUAL COMPONENT 1: INLINE CHART LEGEND (Floating next to dots)
+// ==============================================================================
+
+// Create array to hold 13 row labels (initialized once)
+var label[] legendLabels = array.new_label()
+if barstate.isfirst
+    for i = 0 to 12
+        // We use style_label_left to force perfect vertical centering. 
+        // We set the background color to 100% transparent so only text remains.
+        array.push(legendLabels, label.new(x=na, y=na, text="", style=label.style_label_left, color=color.new(color.black, 100), textcolor=color.white, size=size.small, textalign=text.align_left))
+
+if barstate.islast
+    int lblOffset = 1 // Placed slightly right to accommodate the invisible label padding
+    
+    // Row 13: TTM Squeeze
+    label.set_xy(array.get(legendLabels, 0), bar_index + lblOffset, 13)
+    label.set_text(array.get(legendLabels, 0), "TTM Squeeze")
+    label.set_textcolor(array.get(legendLabels, 0), buySignal ? color.white : color.new(color.white, 70))
+    
+    // Row 11: EMA Squeeze
+    label.set_xy(array.get(legendLabels, 1), bar_index + lblOffset, 11)
+    label.set_text(array.get(legendLabels, 1), "EMA Squeeze")
+    label.set_textcolor(array.get(legendLabels, 1), buyCond ? color.lime : color.new(color.lime, 70))
+    
+    // Row 10: ROC 
+    label.set_xy(array.get(legendLabels, 2), bar_index + lblOffset, 10)
+    label.set_text(array.get(legendLabels, 2), isNewHigh ? "ROC High" : (isNewLow ? "ROC Low" : "ROC Trend"))
+    label.set_textcolor(array.get(legendLabels, 2), isNewHigh ? color.yellow : (isNewLow ? color.gray : color.new(color.gray, 70)))
+    
+    // Row 9: MACD
+    label.set_xy(array.get(legendLabels, 3), bar_index + lblOffset, 9)
+    label.set_text(array.get(legendLabels, 3), "MACD Rising")
+    label.set_textcolor(array.get(legendLabels, 3), Mout ? #ff5900 : color.new(#ff5900, 70))
+    
+    // Row 8: Mom Shift
+    label.set_xy(array.get(legendLabels, 4), bar_index + lblOffset, 8)
+    label.set_text(array.get(legendLabels, 4), "Mom. Shift")
+    label.set_textcolor(array.get(legendLabels, 4), momon ? color.aqua : color.new(color.aqua, 70))
+    
+    // Row 7: Gray Dot BB
+    label.set_xy(array.get(legendLabels, 5), bar_index + lblOffset, 7)
+    label.set_text(array.get(legendLabels, 5), "Gray Dot BB")
+    label.set_textcolor(array.get(legendLabels, 5), GrayDotBB ? color.silver : color.new(color.silver, 70))
+    
+    // Row 6: Oversold BB
+    label.set_xy(array.get(legendLabels, 6), bar_index + lblOffset, 6)
+    label.set_text(array.get(legendLabels, 6), "Oversold BB")
+    label.set_textcolor(array.get(legendLabels, 6), blackdot ? color.gray : color.new(color.gray, 70))
+    
+    // Row 5: EMA Align
+    label.set_xy(array.get(legendLabels, 7), bar_index + lblOffset, 5)
+    label.set_text(array.get(legendLabels, 7), "EMA Align")
+    label.set_textcolor(array.get(legendLabels, 7), Pout ? #f700fb : color.new(#f700fb, 70))
+    
+    // Row 4: Blue Momentum
+    label.set_xy(array.get(legendLabels, 8), bar_index + lblOffset, 4)
+    label.set_text(array.get(legendLabels, 8), "Blue Momentum")
+    label.set_textcolor(array.get(legendLabels, 8), isBlueDot ? #42a5f5 : color.new(#42a5f5, 70))
+    
+    // Row 3: Stoch Rev
+    label.set_xy(array.get(legendLabels, 9), bar_index + lblOffset, 3)
+    label.set_text(array.get(legendLabels, 9), "Stoch Reversal")
+    label.set_textcolor(array.get(legendLabels, 9), greenDotComplex ? color.green : color.new(color.green, 70))
+    
+    // Row 2: Stoch Early
+    label.set_xy(array.get(legendLabels, 10), bar_index + lblOffset, 2)
+    label.set_text(array.get(legendLabels, 10), "Stoch Early")
+    label.set_textcolor(array.get(legendLabels, 10), isGreenDot ? color.green : color.new(color.green, 70))
+    
+    // Row 1: ADX 
+    label.set_xy(array.get(legendLabels, 11), bar_index + lblOffset, 1)
+    label.set_text(array.get(legendLabels, 11), adxpos ? "ADX Positive" : (adxneg ? "ADX Negative" : "ADX Trend"))
+    label.set_textcolor(array.get(legendLabels, 11), adxpos ? color.green : (adxneg ? color.red : color.new(color.gray, 70)))
+    
+    // Row 0: TSI 
+    label.set_xy(array.get(legendLabels, 12), bar_index + lblOffset, 0)
+    label.set_text(array.get(legendLabels, 12), ergodic >= 0 ? "TSI Bullish" : "TSI Bearish")
+    label.set_textcolor(array.get(legendLabels, 12), ergodic >= 0 ? color.teal : color.maroon)
+
+
+// ==============================================================================
+// VISUAL COMPONENT 2: ACTION DASHBOARD (Bottom Right)
+// ==============================================================================
+
+// Scoring Groups
+bools_bull = array.from(buySignal, buyCond, isNewHigh, Mout, momon, greenDotComplex, isGreenDot, isBlueDot, Pout, blackdot, GrayDotBB, adxpos, ergodic >= 0)
+bools_bear = array.from(isNewLow, adxneg, ergodic < 0)
+
+// Standalone Solid Dashboard Table
+var table dashTable = table.new(position.middle_right, 1, 4, border_width=2, border_color=#1e222d, frame_width=2, frame_color=#1e222d, bgcolor=#1e222d)
+
+if barstate.islast
+    int bullCount = 0
+    for i = 0 to array.size(bools_bull) - 1
+        if array.get(bools_bull, i)
+            bullCount += 1
+
+    int bearCount = 0
+    for i = 0 to array.size(bools_bear) - 1
+        if array.get(bools_bear, i)
+            bearCount += 1
+
+    string actionHeader = "⚪ STANDBY: Neutral"
+    color headerBg = #434651 
+    string actionDesc = "Market is lacking clear multi-indicator confluence."
+    string actionRec = "Recommendation: Wait for stronger alignment."
+
+    if PGO or BBB or buyCond or buySignal
+        actionHeader := "🟢 ACTION LONG: Prime Setup"
+        headerBg := #00c076 
+        actionDesc := "High-conviction alignment. Squeeze or Confluence fired."
+        actionRec := "Recommendation: Execute long entries based on system rules."
+    else if bullCount >= 3 and bearCount == 0
+        actionHeader := "🟢 ACTION LONG: Building Momentum"
+        headerBg := #00c076 
+        actionDesc := "Multiple bullish momentum indicators are actively aligned."
+        actionRec := "Recommendation: Look for entry triggers on pullbacks."
+    else if bearCount >= 3 and bullCount == 0
+        actionHeader := "🔴 ACTION SHORT: Prime Setup"
+        headerBg := #f23645 
+        actionDesc := "High-conviction bearish alignment."
+        actionRec := "Recommendation: Execute short entries based on system rules."
+    else if bearCount > bullCount
+        actionHeader := "🟠 PREP SHORT: Bearish Bias"
+        headerBg := #ff9800
+        actionDesc := "Bearish indicators outweigh bullish momentum signals."
+        actionRec := "Recommendation: Protect open longs / Set alerts for short setups."
+
+    table.cell(dashTable, 0, 0, actionHeader, text_color=color.white, bgcolor=headerBg, text_size=size.normal, text_halign=text.align_left)
+    table.cell(dashTable, 0, 1, actionDesc, text_color=color.white, bgcolor=#2a2e39, text_size=size.small, text_halign=text.align_center)
+    table.cell(dashTable, 0, 2, actionRec, text_color=color.white, bgcolor=#2a2e39, text_size=size.small, text_halign=text.align_center)
+    table.cell(dashTable, 0, 3, "Core Stack: " + str.tostring(bullCount) + " Bull / " + str.tostring(bearCount) + " Bear", text_color=color.white, bgcolor=#2a2e39, text_size=size.small, text_halign=text.align_center)
